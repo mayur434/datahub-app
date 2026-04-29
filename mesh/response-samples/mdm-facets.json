@@ -1,0 +1,45 @@
+{
+  "entity": "product",
+  "facetsEnabled": true,
+  "totalFields": 6,
+  "facetableFields": 2,
+  "config": {
+    "returnWithQuery": true,
+    "maxValuesPerFacet": 100
+  },
+  "facets": [
+    {
+      "field": "brand",
+      "label": "Brand",
+      "type": "value",
+      "sortBy": "count",
+      "sortOrder": "desc",
+      "limit": 50,
+      "showCount": true,
+      "collapsed": false,
+      "fieldType": "string",
+      "values": [
+        { "value": "Nike", "count": 15, "selected": false },
+        { "value": "Adidas", "count": 12, "selected": false }
+      ],
+      "totalValues": 2
+    },
+    {
+      "field": "category",
+      "label": "Category",
+      "type": "value",
+      "sortBy": "count",
+      "sortOrder": "desc",
+      "limit": 50,
+      "showCount": true,
+      "collapsed": false,
+      "fieldType": "string",
+      "values": [
+        { "value": "Footwear", "count": 20, "selected": false },
+        { "value": "Apparel", "count": 7, "selected": false }
+      ],
+      "totalValues": 2
+    }
+  ],
+  "totalRecords": 27
+}

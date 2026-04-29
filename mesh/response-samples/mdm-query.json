@@ -1,0 +1,38 @@
+{
+  "entity": "product",
+  "count": 2,
+  "page": 1,
+  "pageSize": 25,
+  "total": 2,
+  "data": [
+    {
+      "sku": "ABC123",
+      "name": "Shoe 1",
+      "brand": "Nike",
+      "category": "Footwear",
+      "status": "active",
+      "region": "IN"
+    },
+    {
+      "sku": "XYZ456",
+      "name": "Shoe 2",
+      "brand": "Adidas",
+      "category": "Footwear",
+      "status": "active",
+      "region": "US"
+    }
+  ],
+  "aggregations": [
+    {
+      "field": "brand",
+      "label": "Brand",
+      "type": "value",
+      "showCount": true,
+      "collapsed": false,
+      "values": [
+        { "value": "Nike", "count": 1, "selected": false },
+        { "value": "Adidas", "count": 1, "selected": false }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,117 @@
+{
+  "meshConfig": {
+    "sources": [
+      {
+        "name": "MDMData",
+        "handler": {
+          "JsonSchema": {
+            "baseUrl": "https://108480-pimapp-stage.adobeioruntime.net/api/v1/web/pimapp/mdm-data",
+            "operationHeaders": {
+              "x-forwarded-authorization": "{context.headers['authorization']}"
+            },
+            "operations": [
+              {
+                "type": "Query",
+                "field": "mdmQuery",
+                "path": "/?entity={args.entity}&page={args.page}&pageSize={args.pageSize}&sort={args.sort}&order={args.order}&fields={args.fields}&facets={args.facets}&filters={args.filters}",
+                "method": "GET",
+                "responseSample": "./mesh/response-samples/mdm-query.json",
+                "argTypeMap": {
+                  "entity": {
+                    "type": "String!"
+                  },
+                  "page": {
+                    "type": "Int"
+                  },
+                  "pageSize": {
+                    "type": "Int"
+                  },
+                  "sort": {
+                    "type": "String"
+                  },
+                  "order": {
+                    "type": "String"
+                  },
+                  "fields": {
+                    "type": "String"
+                  },
+                  "facets": {
+                    "type": "String"
+                  },
+                  "filters": {
+                    "type": "String"
+                  }
+                }
+              },
+              {
+                "type": "Query",
+                "field": "mdmRecord",
+                "path": "/?entity={args.entity}&id={args.id}",
+                "method": "GET",
+                "responseSample": "./mesh/response-samples/mdm-record.json",
+                "argTypeMap": {
+                  "entity": {
+                    "type": "String!"
+                  },
+                  "id": {
+                    "type": "String!"
+                  }
+                }
+              }
+            ]
+          }
+        },
+        "transforms": [
+          {
+            "filterSchema": {
+              "mode": "bare"
+            }
+          }
+        ]
+      },
+      {
+        "name": "MDMFacets",
+        "handler": {
+          "JsonSchema": {
+            "baseUrl": "https://NAMESPACE.adobeioruntime.net/api/v1/web/pimapp/mdm-facets",
+            "operationHeaders": {
+              "x-forwarded-authorization": "{context.headers['authorization']}"
+            },
+            "operations": [
+              {
+                "type": "Query",
+                "field": "mdmFacets",
+                "path": "/?entity={args.entity}&values={args.values}&filters={args.filters}",
+                "method": "GET",
+                "responseSample": "./mesh/response-samples/mdm-facets.json",
+                "argTypeMap": {
+                  "entity": {
+                    "type": "String!"
+                  },
+                  "values": {
+                    "type": "String"
+                  },
+                  "filters": {
+                    "type": "String"
+                  }
+                }
+              }
+            ]
+          }
+        },
+        "transforms": [
+          {
+            "filterSchema": {
+              "mode": "bare"
+            }
+          }
+        ]
+      }
+    ],
+    "responseConfig": {
+      "headers": {
+        "Cache-Control": "public, max-age=60, s-maxage=120"
+      }
+    }
+  }
+}

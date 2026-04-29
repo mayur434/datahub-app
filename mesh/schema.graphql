@@ -1,0 +1,198 @@
+"""
+AEM MDM - API Mesh Common Schema
+
+This schema is ENTITY-AGNOSTIC. The same schema serves all master data entities.
+No changes required when a new CSV/entity is uploaded.
+
+The `data` field returns JSON objects whose shape depends on the entity's schema.
+Consumers use the `entity` argument to specify which master data to query.
+Filters are passed as query params that map to the entity's queryable columns.
+"""
+
+scalar JSON
+
+"""
+A single aggregation bucket value with count
+"""
+type FacetValue {
+  "The distinct value for this bucket"
+  value: String!
+  "Number of records matching this value"
+  count: Int!
+  "Whether this value is currently selected as a filter"
+  selected: Boolean!
+}
+
+"""
+Aggregation/facet result for a single field
+"""
+type Aggregation {
+  "Field name this aggregation is computed on"
+  field: String!
+  "Human-readable label for display"
+  label: String!
+  "Facet type: value, range, boolean"
+  type: String!
+  "Whether to show counts next to values"
+  showCount: Boolean!
+  "Whether this facet should render collapsed by default"
+  collapsed: Boolean!
+  "Aggregated bucket values with counts"
+  values: [FacetValue!]!
+}
+
+"""
+Facet configuration metadata for a single field
+"""
+type FacetConfig {
+  "Field name"
+  field: String!
+  "Display label"
+  label: String!
+  "Facet type: value, range, boolean"
+  type: String!
+  "Sort buckets by: count or value"
+  sortBy: String!
+  "Sort direction: asc or desc"
+  sortOrder: String!
+  "Maximum number of values to return"
+  limit: Int!
+  "Show counts alongside values"
+  showCount: Boolean!
+  "Render collapsed by default"
+  collapsed: Boolean!
+  "Schema field type (string, number, boolean)"
+  fieldType: String!
+  "Live aggregated values (only when values=true)"
+  values: [FacetValue!]
+  "Total distinct values for this field"
+  totalValues: Int
+}
+
+"""
+Facets metadata response for an entity
+"""
+type MDMFacetsResponse {
+  "Entity name"
+  entity: String!
+  "Whether facets are enabled for this entity"
+  facetsEnabled: Boolean!
+  "Total schema fields"
+  totalFields: Int
+  "Number of facetable fields"
+  facetableFields: Int
+  "Global facets configuration"
+  config: JSON
+  "Facet definitions and optionally live values"
+  facets: [FacetConfig!]!
+  "Total records matching current filters (when values=true)"
+  totalRecords: Int
+}
+
+"""
+Paginated response for master data queries.
+This is the COMMON response type for all entities.
+"""
+type MDMQueryResponse {
+  "Entity name (e.g., product, stores, categories)"
+  entity: String!
+  "Number of records in this page"
+  count: Int!
+  "Current page number (1-based)"
+  page: Int!
+  "Page size"
+  pageSize: Int!
+  "Total records matching the query"
+  total: Int!
+  "Array of data records (shape depends on entity schema)"
+  data: [JSON!]!
+  "Aggregations/facets computed for facetable fields (if configured)"
+  aggregations: [Aggregation!]
+}
+
+"""
+Single record response
+"""
+type MDMRecordResponse {
+  "Entity name"
+  entity: String!
+  "Record data (shape depends on entity schema)"
+  data: JSON!
+}
+
+"""
+Error response
+"""
+type MDMErrorResponse {
+  error: String!
+}
+
+type Query {
+  """
+  Query master data records with optional filters, pagination, and sorting.
+  
+  Filters are passed as a JSON string of key-value pairs matching the entity's 
+  queryable column names. Multiple filters combine with AND logic.
+  
+  When facets are configured on the entity, aggregations are returned automatically.
+  Aggregation counts update dynamically based on applied filters (excluding the
+  facet's own field — "disjunctive faceting").
+  
+  Examples:
+    mdmQuery(entity: "product", page: 1, pageSize: 25)
+    mdmQuery(entity: "product", filters: "{\"brand\":\"Nike\",\"status\":\"active\"}")
+    mdmQuery(entity: "product", facets: "true", filters: "{\"brand\":\"Nike\"}")
+  """
+  mdmQuery(
+    "Entity/file name to query (required)"
+    entity: String!
+    "Page number (default: 1)"
+    page: Int
+    "Records per page (default: 25, max: 100)"
+    pageSize: Int
+    "Sort by field name (default: primary key)"
+    sort: String
+    "Sort order: asc or desc (default: asc)"
+    order: String
+    "Comma-separated field names to include in response"
+    fields: String
+    "Force include facets/aggregations: true or false (default: auto based on entity config)"
+    facets: String
+    "Filters as JSON string of key-value pairs e.g. {\"brand\":\"Nike\",\"status\":\"active\"}"
+    filters: String
+  ): MDMQueryResponse!
+
+  """
+  Get a single record by entity name and primary key value.
+  
+  Example:
+    mdmRecord(entity: "product", id: "ABC123")
+  """
+  mdmRecord(
+    "Entity/file name (required)"
+    entity: String!
+    "Primary key value (required)"
+    id: String!
+  ): MDMRecordResponse!
+
+  """
+  Get facets/aggregation metadata for an entity.
+  Returns which fields are facetable and their configuration.
+  Optionally returns live aggregated values with counts.
+  
+  Use this to build faceted navigation / filter UIs on the frontend.
+  
+  Examples:
+    mdmFacets(entity: "product") — config only
+    mdmFacets(entity: "product", values: "true") — config + live counts
+    mdmFacets(entity: "product", values: "true", filters: "{\"brand\":\"Nike\"}") — counts with filter
+  """
+  mdmFacets(
+    "Entity/file name (required)"
+    entity: String!
+    "Return live aggregated values with counts (default: false)"
+    values: String
+    "Filters as JSON string to narrow aggregation scope"
+    filters: String
+  ): MDMFacetsResponse!
+}

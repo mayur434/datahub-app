@@ -1,0 +1,11 @@
+{
+  "entity": "product",
+  "data": {
+    "sku": "ABC123",
+    "name": "Shoe 1",
+    "brand": "Nike",
+    "category": "Footwear",
+    "status": "active",
+    "region": "IN"
+  }
+}

@@ -1,0 +1,181 @@
+/**
+ * MDM File Upload Action
+ * Handles CSV file upload, parsing, validation, and initial entity creation.
+ * Stores metadata + records in aio-lib-db.
+ */
+
+const { getDbClient, safeFindOne, COLLECTIONS, parseCSV, validateCSV, createVersion, createAuditLog, createResponse, createErrorResponse, validateIMSToken, getUserFromParams } = require('../mdm-utils')
+
+async function main (params) {
+  if (params.__ow_method === 'options') return createResponse({})
+
+  const auth = validateIMSToken(params)
+  if (!auth.valid) return createErrorResponse(auth.error, 401)
+
+  const user = getUserFromParams(params)
+
+  let client
+  try {
+    const { csvContent, entityName, displayName, primaryKey, visibility, crudEnabled, allowedOperations, queryableFields, requiredFields, facetableFields, facetsConfig, archivalConfig, schema, description } = params
+
+    if (!csvContent || !entityName || !primaryKey) {
+      return createErrorResponse('Missing required fields: csvContent, entityName, primaryKey')
+    }
+
+    if (!/^[a-z][a-z0-9-]*$/.test(entityName)) {
+      return createErrorResponse('Entity name must be lowercase alphanumeric with hyphens, starting with a letter')
+    }
+
+    // Parse CSV
+    const { headers, records } = parseCSV(csvContent)
+
+    if (!headers.includes(primaryKey)) {
+      return createErrorResponse(`Primary key '${primaryKey}' not found in CSV headers: ${headers.join(', ')}`)
+    }
+
+    // Build schema
+    const finalSchema = schema || headers.map(h => ({
+      name: h,
+      type: 'string',
+      required: requiredFields ? requiredFields.includes(h) : h === primaryKey,
+      queryable: queryableFields ? queryableFields.includes(h) : false,
+      facetable: facetableFields ? facetableFields.includes(h) : false,
+      editable: h !== primaryKey
+    }))
+
+    // Validate
+    const tempMetadata = { primaryKey, schema: finalSchema }
+    const validationErrors = validateCSV(headers, records, tempMetadata)
+    if (validationErrors.length > 0) {
+      return createResponse({ status: 'validation_failed', errors: validationErrors, errorCount: validationErrors.length }, 422)
+    }
+
+    if (records.length > 50000) {
+      return createErrorResponse('CSV exceeds maximum row limit of 50,000 records', 413)
+    }
+
+    client = await getDbClient(params)
+    const metaCol = await client.collection(COLLECTIONS.METADATA)
+    const recordsCol = await client.collection(COLLECTIONS.RECORDS)
+
+    // Check if entity exists
+    const existing = await safeFindOne(metaCol, { entityName })
+    if (existing && existing.status !== 'deleted') {
+      return createErrorResponse(`Entity '${entityName}' already exists. Use full-update or delta-update instead.`, 409)
+    }
+
+    // Create version
+    const version = await createVersion(client, entityName, 'initial-upload', user, {
+      inserted: records.length, updated: 0, deleted: 0
+    }, records.length)
+
+    // Create metadata document
+    const fileMetadata = {
+      entityName,
+      displayName: displayName || entityName,
+      description: description || '',
+      originalFileName: `${entityName}.csv`,
+      primaryKey,
+      status: 'active',
+      visibility: visibility || 'private',
+      crudEnabled: crudEnabled !== false,
+      allowedOperations: allowedOperations || {
+        read: true, create: true, update: true, patch: true,
+        delete: true, bulkUpdate: true, fullUpdate: true, deltaUpdate: true
+      },
+      schema: finalSchema,
+      facets: {
+        enabled: Array.isArray(facetableFields) ? facetableFields.length > 0 : false,
+        fields: (facetableFields || []).map(f => {
+          const fieldConfig = (facetsConfig && facetsConfig[f]) || {}
+          return {
+            field: f,
+            label: fieldConfig.label || f,
+            type: fieldConfig.type || 'value',
+            sortBy: fieldConfig.sortBy || 'count',
+            sortOrder: fieldConfig.sortOrder || 'desc',
+            limit: fieldConfig.limit || 50,
+            showCount: fieldConfig.showCount !== false,
+            collapsed: fieldConfig.collapsed || false
+          }
+        }),
+        returnWithQuery: true,
+        maxValuesPerFacet: 100
+      },
+      activeVersionId: version.versionId,
+      schemaVersionId: 'schema-v1',
+      recordCount: records.length,
+
+      api: {
+        basePath: `/api/mdm/${entityName}`,
+        readEnabled: true,
+        writeEnabled: crudEnabled !== false,
+        bulkEnabled: true
+      },
+      governance: { owner: user, businessUnit: '', retentionPolicy: 'last-10-versions' },
+      archival: {
+        enabled: archivalConfig ? (archivalConfig.enabled !== false) : false,
+        threshold: (archivalConfig && archivalConfig.threshold) || 50000,
+        retentionDays: (archivalConfig && archivalConfig.retentionDays) || 90,
+        keepLatest: (archivalConfig && archivalConfig.keepLatest) || 10000,
+        archiveFormat: (archivalConfig && archivalConfig.archiveFormat) || 'csv',
+        notifyEmail: (archivalConfig && archivalConfig.notifyEmail) || '',
+        lastArchiveAt: null,
+        totalArchived: 0
+      },
+      createdBy: user,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    }
+
+    await metaCol.insertOne(fileMetadata)
+
+    // Bulk insert records
+    const recordDocs = records.map(record => ({
+      entityName,
+      primaryKey: record[primaryKey],
+      versionId: version.versionId,
+      data: record,
+      status: 'active',
+      deleted: false,
+      createdAt: new Date().toISOString(),
+      createdBy: user,
+      updatedAt: new Date().toISOString(),
+      updatedBy: user
+    }))
+
+    await recordsCol.insertMany(recordDocs)
+
+    // Create indexes for query performance
+    await recordsCol.createIndex({ entityName: 1, primaryKey: 1 }, { unique: true })
+    await recordsCol.createIndex({ entityName: 1, status: 1, deleted: 1 })
+
+    // Audit
+    await createAuditLog(client, {
+      entityName,
+      operation: 'upload',
+      actor: user,
+      status: 'success',
+      afterVersion: version.versionId,
+      affectedRecords: records.length,
+
+    })
+
+    return createResponse({
+      status: 'success',
+      entity: entityName,
+      versionId: version.versionId,
+      recordCount: records.length,
+      schema: finalSchema,
+      api: fileMetadata.api,
+      message: `Successfully uploaded ${records.length} records for entity '${entityName}'`
+    }, 201)
+  } catch (error) {
+    console.error('File upload error:', error)
+    return createErrorResponse(`Upload failed: ${error.message}`, 500)
+  } finally {
+    if (client) await client.close()
+  }
+}
+
+exports.main = main

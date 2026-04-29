@@ -1,0 +1,278 @@
+application:
+  actions: actions
+  web: web-src
+  runtimeManifest:
+    database:
+      auto-provision: true
+      region: apac
+    packages:
+      pimapp:
+        license: Apache-2.0
+        actions:
+          generic:
+            function: actions/generic/index.js
+            web: 'yes'
+            runtime: nodejs:22
+            inputs:
+              LOG_LEVEL: debug
+            annotations:
+              require-adobe-auth: true
+              final: true
+              include-ims-credentials: true
+          publish-events:
+            function: actions/publish-events/index.js
+            web: 'yes'
+            runtime: nodejs:22
+            inputs:
+              LOG_LEVEL: debug
+              apiKey: $SERVICE_API_KEY
+            annotations:
+              require-adobe-auth: true
+              final: true
+              include-ims-credentials: true
+          dashboard:
+            function: actions/dashboard/index.js
+            web: 'yes'
+            runtime: nodejs:22
+            inputs:
+              LOG_LEVEL: debug
+            annotations:
+              require-adobe-auth: true
+              final: true
+              include-ims-credentials: true
+          file-upload:
+            function: actions/file-upload/index.js
+            web: 'yes'
+            runtime: nodejs:22
+            inputs:
+              LOG_LEVEL: debug
+            annotations:
+              require-adobe-auth: true
+              final: true
+              include-ims-credentials: true
+          file-list:
+            function: actions/file-list/index.js
+            web: 'yes'
+            runtime: nodejs:22
+            inputs:
+              LOG_LEVEL: debug
+            annotations:
+              require-adobe-auth: true
+              final: true
+              include-ims-credentials: true
+          file-detail:
+            function: actions/file-detail/index.js
+            web: 'yes'
+            runtime: nodejs:22
+            inputs:
+              LOG_LEVEL: debug
+            annotations:
+              require-adobe-auth: true
+              final: true
+              include-ims-credentials: true
+          file-delete:
+            function: actions/file-delete/index.js
+            web: 'yes'
+            runtime: nodejs:22
+            inputs:
+              LOG_LEVEL: debug
+            annotations:
+              require-adobe-auth: true
+              final: true
+              include-ims-credentials: true
+          metadata-update:
+            function: actions/metadata-update/index.js
+            web: 'yes'
+            runtime: nodejs:22
+            inputs:
+              LOG_LEVEL: debug
+            annotations:
+              require-adobe-auth: true
+              final: true
+              include-ims-credentials: true
+          query-data:
+            function: actions/query-data/index.js
+            web: 'yes'
+            runtime: nodejs:22
+            inputs:
+              LOG_LEVEL: debug
+            annotations:
+              require-adobe-auth: true
+              final: true
+              include-ims-credentials: true
+          mdm-data:
+            function: actions/mdm-data/index.js
+            web: 'yes'
+            runtime: nodejs:22
+            inputs:
+              LOG_LEVEL: debug
+            annotations:
+              require-adobe-auth: false
+              final: true
+              include-ims-credentials: true
+          mdm-facets:
+            function: actions/mdm-facets/index.js
+            web: 'yes'
+            runtime: nodejs:22
+            inputs:
+              LOG_LEVEL: debug
+            annotations:
+              require-adobe-auth: false
+              final: true
+              include-ims-credentials: true
+          record-crud:
+            function: actions/record-crud/index.js
+            web: 'yes'
+            runtime: nodejs:22
+            inputs:
+              LOG_LEVEL: debug
+            annotations:
+              require-adobe-auth: true
+              final: true
+              include-ims-credentials: true
+          full-update:
+            function: actions/full-update/index.js
+            web: 'yes'
+            runtime: nodejs:22
+            inputs:
+              LOG_LEVEL: debug
+            annotations:
+              require-adobe-auth: true
+              final: true
+              include-ims-credentials: true
+          delta-update:
+            function: actions/delta-update/index.js
+            web: 'yes'
+            runtime: nodejs:22
+            inputs:
+              LOG_LEVEL: debug
+            annotations:
+              require-adobe-auth: true
+              final: true
+              include-ims-credentials: true
+          bulk-update:
+            function: actions/bulk-update/index.js
+            web: 'yes'
+            runtime: nodejs:22
+            inputs:
+              LOG_LEVEL: debug
+            annotations:
+              require-adobe-auth: true
+              final: true
+              include-ims-credentials: true
+          schema-update:
+            function: actions/schema-update/index.js
+            web: 'yes'
+            runtime: nodejs:22
+            inputs:
+              LOG_LEVEL: debug
+            annotations:
+              require-adobe-auth: true
+              final: true
+              include-ims-credentials: true
+          version-list:
+            function: actions/version-list/index.js
+            web: 'yes'
+            runtime: nodejs:22
+            inputs:
+              LOG_LEVEL: debug
+            annotations:
+              require-adobe-auth: true
+              final: true
+              include-ims-credentials: true
+          version-rollback:
+            function: actions/version-rollback/index.js
+            web: 'yes'
+            runtime: nodejs:22
+            inputs:
+              LOG_LEVEL: debug
+            annotations:
+              require-adobe-auth: true
+              final: true
+              include-ims-credentials: true
+          visibility-update:
+            function: actions/visibility-update/index.js
+            web: 'yes'
+            runtime: nodejs:22
+            inputs:
+              LOG_LEVEL: debug
+            annotations:
+              require-adobe-auth: true
+              final: true
+              include-ims-credentials: true
+          audit-list:
+            function: actions/audit-list/index.js
+            web: 'yes'
+            runtime: nodejs:22
+            inputs:
+              LOG_LEVEL: debug
+            annotations:
+              require-adobe-auth: true
+              final: true
+              include-ims-credentials: true
+          app-settings:
+            function: actions/app-settings/index.js
+            web: 'yes'
+            runtime: nodejs:22
+            inputs:
+              LOG_LEVEL: debug
+            annotations:
+              require-adobe-auth: true
+              final: true
+              include-ims-credentials: true
+          audit-cleanup:
+            function: actions/audit-cleanup/index.js
+            web: 'yes'
+            runtime: nodejs:22
+            inputs:
+              LOG_LEVEL: debug
+            annotations:
+              require-adobe-auth: true
+              final: true
+              include-ims-credentials: true
+          archive-run:
+            function: actions/archive-run/index.js
+            web: 'yes'
+            runtime: nodejs:22
+            inputs:
+              LOG_LEVEL: debug
+            annotations:
+              require-adobe-auth: true
+              final: true
+              include-ims-credentials: true
+          archive-list:
+            function: actions/archive-list/index.js
+            web: 'yes'
+            runtime: nodejs:22
+            inputs:
+              LOG_LEVEL: debug
+            annotations:
+              require-adobe-auth: true
+              final: true
+              include-ims-credentials: true
+          archive-config:
+            function: actions/archive-config/index.js
+            web: 'yes'
+            runtime: nodejs:22
+            inputs:
+              LOG_LEVEL: debug
+            annotations:
+              require-adobe-auth: true
+              final: true
+              include-ims-credentials: true
+    triggers:
+      audit-cleanup-daily:
+        feed: /whisk.system/alarms/alarm
+        inputs:
+          cron: '0 2 * * *'
+      archive-run-daily:
+        feed: /whisk.system/alarms/alarm
+        inputs:
+          cron: '0 3 * * *'
+    rules:
+      audit-cleanup-rule:
+        trigger: audit-cleanup-daily
+        action: pimapp/audit-cleanup
+      archive-run-rule:
+        trigger: archive-run-daily
+        action: pimapp/archive-run
