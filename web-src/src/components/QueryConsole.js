@@ -77,7 +77,7 @@ function QueryConsole ({ runtime, ims }) {
       <Flex justifyContent='space-between' alignItems='center' marginBottom='size-300'>
         <View>
           <Heading level={1} UNSAFE_className='mdm-page__title'>Query Console</Heading>
-          <Text UNSAFE_className='mdm-page__subtitle'>Test data queries and explore API Mesh endpoints</Text>
+          <Text UNSAFE_className='mdm-page__subtitle'>Test and preview data queries before integrating with API Mesh</Text>
         </View>
       </Flex>
 
@@ -85,18 +85,22 @@ function QueryConsole ({ runtime, ims }) {
       <View UNSAFE_className='mdm-card' marginBottom='size-300'>
         <Heading level={3} marginBottom='size-200'>Query Builder</Heading>
         <div className='mdm-form-grid'>
-          <Picker label='Entity' selectedKey={selectedEntity} onSelectionChange={setSelectedEntity} isRequired width='100%'>
+          <Picker label='Entity' selectedKey={selectedEntity} onSelectionChange={setSelectedEntity} isRequired width='100%'
+            placeholder='Select an entity...'>
             {entities.map(e => <Item key={e.entityName}>{e.displayName || e.entityName}</Item>)}
           </Picker>
 
           <TextField label='Record ID (single)' value={recordId} onChange={setRecordId}
-            placeholder='Leave empty for collection query' width='100%' />
+            placeholder='Leave empty for collection query' width='100%'
+            description='Fetch a specific record by its primary key value' />
 
           <TextField label='Filters' value={filterStr} onChange={setFilterStr}
-            placeholder='field=value&field2=value2' width='100%' />
+            placeholder='sku=ABC123&brand=Nike' width='100%'
+            description='Format: field=value. Multiple filters joined with &' />
 
           <Flex gap='size-200' width='100%'>
-            <TextField label='Sort Field' value={sortField} onChange={setSortField} flex={1} />
+            <TextField label='Sort Field' value={sortField} onChange={setSortField} flex={1}
+              placeholder='e.g. name, price, createdAt' />
             <Picker label='Order' selectedKey={sortOrder} onSelectionChange={setSortOrder} width='size-1600'>
               <Item key='asc'>Ascending</Item>
               <Item key='desc'>Descending</Item>
@@ -104,7 +108,8 @@ function QueryConsole ({ runtime, ims }) {
           </Flex>
 
           <TextField label='Fields (comma-separated)' value={fields} onChange={setFields}
-            placeholder='name,code,price' width='100%' />
+            placeholder='name,sku,price' width='100%'
+            description='Leave empty to return all fields' />
 
           <Flex gap='size-200' width='100%'>
             <TextField label='Page' value={String(page)} onChange={v => setPage(Number(v) || 1)} width='size-1200' />
@@ -112,38 +117,47 @@ function QueryConsole ({ runtime, ims }) {
           </Flex>
         </div>
 
-        <Flex marginTop='size-200'>
+        <Flex marginTop='size-300' gap='size-100'>
           <Button variant='cta' onPress={handleQuery} isDisabled={!selectedEntity || loading}>
-            <Code size='S' /><Text>{loading ? 'Querying...' : 'Execute Query'}</Text>
+            <Code size='S' /><Text>{loading ? 'Running...' : 'Execute Query'}</Text>
           </Button>
+          {result && (
+            <Button variant='secondary' isQuiet onPress={() => { setResult(null); setError(null) }}>
+              <Text>Clear Results</Text>
+            </Button>
+          )}
         </Flex>
       </View>
 
       {error && (
-        <div className='mdm-alert mdm-alert--error' style={{ marginBottom: 16, padding: '12px 16px', borderRadius: 6 }}>
-          <Text>{error}</Text>
-        </div>
+        <Well marginBottom='size-300' UNSAFE_className='mdm-alert mdm-alert--error'>
+          <Text><strong>Query Error:</strong> {error}</Text>
+        </Well>
       )}
 
       {/* Result */}
       {result && (
         <View UNSAFE_className='mdm-card' marginBottom='size-300'>
           <Flex justifyContent='space-between' alignItems='center' marginBottom='size-200'>
-            <Heading level={3}>Result</Heading>
+            <Heading level={3}>Results</Heading>
             <Flex gap='size-100' alignItems='center'>
               <Text UNSAFE_className='mdm-text-muted'>
                 {result.count !== undefined && `${result.count} records`}
-                {result.total !== undefined && ` / ${result.total} total`}
-                {result.page !== undefined && ` • Page ${result.page}`}
+                {result.total !== undefined && ` of ${result.total} total`}
+                {result.page !== undefined && ` \u2022 Page ${result.page}`}
               </Text>
               <Button variant='secondary' isQuiet onPress={() => copyToClipboard(JSON.stringify(result, null, 2))}>
-                Copy
+                Copy JSON
               </Button>
             </Flex>
           </Flex>
 
           <div className='mdm-code-block'>
-            <pre>{JSON.stringify(result, null, 2)}</pre>
+            <div className='mdm-code-block__header'>
+              <span>Response</span>
+              <span>{JSON.stringify(result).length} bytes</span>
+            </div>
+            <pre className='mdm-code-block__content'>{JSON.stringify(result, null, 2)}</pre>
           </div>
         </View>
       )}

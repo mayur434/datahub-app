@@ -88,11 +88,12 @@ function FileDetail ({ runtime, ims }) {
             {file.entityName} • {file.recordCount} records • Version {file.activeVersionId}
           </Text>
         </View>
-        <Flex gap='size-100'>
+        <Flex gap='size-100' wrap>
           <Button variant='secondary' onPress={() => navigate('/files')}>Back</Button>
           <Button variant='primary' onPress={() => navigate(`/files/${entity}/records`)}>Records</Button>
           <Button variant='primary' onPress={() => navigate(`/files/${entity}/schema`)}>Schema</Button>
           <Button variant='primary' onPress={() => navigate(`/files/${entity}/versions`)}>Versions</Button>
+          <Button variant='primary' onPress={() => navigate(`/files/${entity}/archives`)}>Archives</Button>
         </Flex>
       </Flex>
 

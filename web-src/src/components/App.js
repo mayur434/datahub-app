@@ -1,7 +1,7 @@
 import React from 'react'
-import { Provider, defaultTheme, Grid, View } from '@adobe/react-spectrum'
+import { Provider, defaultTheme, Grid, View, Heading, Text, Button } from '@adobe/react-spectrum'
 import ErrorBoundary from 'react-error-boundary'
-import { HashRouter as Router, Routes, Route } from 'react-router-dom'
+import { HashRouter as Router, Routes, Route, useNavigate } from 'react-router-dom'
 import { NotificationProvider } from './NotificationProvider'
 import SideBar from './SideBar'
 import HeaderBar from './HeaderBar'
@@ -69,6 +69,7 @@ function App (props) {
                   <Route path='/api-console' element={<QueryConsole runtime={props.runtime} ims={props.ims} />} />
                   <Route path='/audit' element={<AuditLogs runtime={props.runtime} ims={props.ims} />} />
                   <Route path='/settings' element={<AppSettings runtime={props.runtime} ims={props.ims} />} />
+                  <Route path='*' element={<NotFound />} />
                 </Routes>
               </View>
             </Grid>
@@ -88,13 +89,29 @@ function fallbackComponent ({ componentStack, error }) {
     <div className='mdm-error-fallback'>
       <div className='mdm-error-fallback__icon'>⚠</div>
       <h1>Something went wrong</h1>
-      <p>The application encountered an unexpected error. Please reload the page.</p>
+      <p>DataHub encountered an unexpected error. Please reload the page to continue.</p>
       <details>
         <summary>Technical Details</summary>
         <pre>{error.message}{'\n'}{componentStack}</pre>
       </details>
       <button onClick={() => window.location.reload()}>Reload Application</button>
     </div>
+  )
+}
+
+function NotFound () {
+  const navigate = useNavigate()
+  return (
+    <View UNSAFE_className='mdm-page'>
+      <div className='mdm-empty-state'>
+        <div className='mdm-empty-state__icon'>404</div>
+        <Heading level={2}>Page Not Found</Heading>
+        <Text>The page you are looking for does not exist or has been moved.</Text>
+        <Button variant='accent' marginTop='size-200' onPress={() => navigate('/')}>
+          Go to Dashboard
+        </Button>
+      </div>
+    </View>
   )
 }
 

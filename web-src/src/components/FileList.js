@@ -161,7 +161,7 @@ function FileList ({ runtime, ims }) {
           </ActionButton>
           <Button variant='accent' onPress={() => navigate('/upload')}>
             <Add />
-            <Text>Upload CSV</Text>
+            <Text>Import Data</Text>
           </Button>
         </Flex>
       </Flex>
@@ -214,16 +214,16 @@ function FileList ({ runtime, ims }) {
         <div className='mdm-empty-state'>
           <div className='mdm-empty-state__icon'>📂</div>
           <Heading level={2}>
-            {searchTerm || filterVisibility !== 'all' ? 'No matching entities' : 'No entities yet'}
+            {searchTerm || filterVisibility !== 'all' ? 'No matching entities' : 'Get started'}
           </Heading>
           <Text>
             {searchTerm || filterVisibility !== 'all'
               ? 'Try adjusting your search or filter criteria.'
-              : 'Upload a CSV file to create your first master data entity.'}
+              : 'Import a CSV file to create your first data entity and start managing your master data.'}
           </Text>
           {!searchTerm && filterVisibility === 'all' && (
             <Button variant='accent' marginTop='size-200' onPress={() => navigate('/upload')}>
-              Upload First CSV
+              Import Your First Dataset
             </Button>
           )}
         </div>
@@ -295,6 +295,7 @@ function FileList ({ runtime, ims }) {
                           case 'records': navigate(`/files/${file.entityName}/records`); break
                           case 'schema': navigate(`/files/${file.entityName}/schema`); break
                           case 'versions': navigate(`/files/${file.entityName}/versions`); break
+                          case 'archives': navigate(`/files/${file.entityName}/archives`); break
                           case 'visibility': handleToggleVisibility(file.entityName, file.visibility); break
                           case 'delete': handleDelete(file.entityName, file.displayName); break
                         }
@@ -304,8 +305,9 @@ function FileList ({ runtime, ims }) {
                       <Item key='records'>Manage Records</Item>
                       <Item key='schema'>Edit Schema</Item>
                       <Item key='versions'>Version History</Item>
+                      <Item key='archives'>Archives &amp; Backups</Item>
                       <Item key='visibility'>{file.visibility === 'public' ? 'Make Private' : 'Make Public'}</Item>
-                      <Item key='delete'>Delete</Item>
+                      <Item key='delete'>Delete Entity</Item>
                     </ActionMenu>
                   </td>
                 </tr>
