@@ -264,11 +264,11 @@ application:
       audit-cleanup-daily:
         feed: /whisk.system/alarms/alarm
         inputs:
-          cron: '0 2 * * *'
+          cron: 0 2 * * *
       archive-run-daily:
         feed: /whisk.system/alarms/alarm
         inputs:
-          cron: '0 3 * * *'
+          cron: 0 3 * * *
     rules:
       audit-cleanup-rule:
         trigger: audit-cleanup-daily

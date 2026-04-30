@@ -1,0 +1,41 @@
+{
+  "type": "object",
+  "properties": {
+    "entity": { "type": "string" },
+    "facetsEnabled": { "type": "boolean" },
+    "totalFields": { "type": "integer" },
+    "facetableFields": { "type": "integer" },
+    "config": {},
+    "facets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "field": { "type": "string" },
+          "label": { "type": "string" },
+          "type": { "type": "string" },
+          "sortBy": { "type": "string" },
+          "sortOrder": { "type": "string" },
+          "limit": { "type": "integer" },
+          "showCount": { "type": "boolean" },
+          "collapsed": { "type": "boolean" },
+          "fieldType": { "type": "string" },
+          "values": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "value": { "type": "string" },
+                "count": { "type": "integer" },
+                "selected": { "type": "boolean" }
+              }
+            }
+          },
+          "totalValues": { "type": "integer" }
+        }
+      }
+    },
+    "totalRecords": { "type": "integer" }
+  },
+  "required": ["entity", "facetsEnabled", "facets"]
+}

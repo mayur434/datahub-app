@@ -97,7 +97,7 @@ pimapp/
 │
 ├── actions/                 # Backend serverless actions
 │   ├── utils.js             # Shared utilities (auth, params, logging)
-│   ├── mdm-utils.js         # MDM-specific helpers (escapeRegex, filter parsing)
+│   ├── mdm-utils.js         # MDM shared helpers (DB client, safeFindOne, CSV parsing, auth, versioning, audit)
 │   │
 │   ├── dashboard/           # Dashboard KPIs & platform status
 │   ├── file-upload/         # CSV import & entity creation
@@ -134,10 +134,14 @@ pimapp/
 ├── mesh/                    # API Mesh configuration
 │   ├── mesh.json            # Mesh source definitions & operations
 │   ├── schema.graphql       # GraphQL type definitions
-│   └── response-samples/    # Response shape samples for Mesh
-│       ├── mdm-query.json
-│       ├── mdm-record.json
-│       └── mdm-facets.json
+│   ├── response-samples/    # Legacy response samples (no longer used by mesh)
+│   │   ├── mdm-query.json
+│   │   ├── mdm-record.json
+│   │   └── mdm-facets.json
+│   └── response-schemas/    # JSON Schema definitions for dynamic types
+│       ├── mdm-query.schema.json   # data items as opaque JSON (entity-agnostic)
+│       ├── mdm-record.schema.json  # single record as opaque JSON
+│       └── mdm-facets.schema.json  # facets response schema
 │
 ├── web-src/                 # Frontend SPA
 │   ├── index.html           # Entry HTML (title: DataHub)
@@ -166,8 +170,7 @@ pimapp/
 │           ├── AppSettings.js   # Settings panel (hypothetical)
 │           ├── NotificationProvider.js # Toast notifications context
 │           ├── ActionsForm.js   # Legacy form (unused)
-│           ├── About.js         # About page (unused)
-│           └── SideBar.js       # Left navigation sidebar
+│           └── About.js         # About page (unused)
 │
 ├── test/                    # Unit tests
 │   ├── generic.test.js
@@ -185,38 +188,36 @@ pimapp/
 
 ### Action Anatomy
 
-Every action follows this pattern:
+Every MDM action follows this pattern (using shared `mdm-utils`):
 
 ```javascript
-const { Core } = require('@adobe/aio-sdk')
-const { errorResponse, stringParameters, checkMissingRequestInputs } = require('../utils')
+const { getDbClient, safeFindOne, COLLECTIONS, createResponse, createErrorResponse, validateIMSToken } = require('../mdm-utils')
 
 async function main (params) {
-  const logger = Core.Logger('action-name', { level: params.LOG_LEVEL || 'info' })
-  logger.info('Calling action-name')
+  if (params.__ow_method === 'options') return createResponse({})
 
+  const auth = validateIMSToken(params)
+  if (!auth.valid) return createErrorResponse(auth.error, 401)
+
+  let client
   try {
-    // 1. Validate inputs
-    const requiredParams = ['entity']
-    const errorMessage = checkMissingRequestInputs(params, requiredParams)
-    if (errorMessage) return errorResponse(400, errorMessage, logger)
+    const { entity } = params
+    if (!entity) return createErrorResponse('Missing required parameter: entity')
 
-    // 2. Get database client
-    const { DatabaseClient } = require('@adobe/aio-lib-db')
-    const db = await DatabaseClient.createFrom(params)
+    client = await getDbClient(params)
+    const recordsCol = await client.collection(COLLECTIONS.RECORDS)
 
-    // 3. Business logic
-    const result = await db.collection('records').find({ entity: params.entity })
+    // Query with simple filter only (aio-lib-db limitation)
+    const allRecords = await recordsCol.find({ entityName: entity }).toArray()
+    // JS-level safety filter
+    const active = allRecords.filter(r => r.deleted !== true && r.status !== 'deleted')
 
-    // 4. Return response
-    return {
-      statusCode: 200,
-      headers: { 'Content-Type': 'application/json' },
-      body: result
-    }
+    return createResponse({ entity, data: active.map(r => r.data) })
   } catch (error) {
-    logger.error(error)
-    return errorResponse(500, 'Internal server error', logger)
+    console.error('Action error:', error)
+    return createErrorResponse(`Failed: ${error.message}`, 500)
+  } finally {
+    if (client) await client.close()
   }
 }
 
@@ -281,12 +282,12 @@ database:
 
 | Collection | Purpose | Key Fields |
 |------------|---------|------------|
-| `metadata` | Entity registry | `entity`, `entityName`, `recordCount`, `schema`, `createdAt`, `updatedAt` |
-| `records` | Data records | `entity`, `_id`, `...fields` (dynamic per entity schema) |
-| `versions` | Version snapshots | `entity`, `version`, `type`, `user`, `data`, `createdAt` |
-| `audit` | Activity log | `action`, `entity`, `user`, `details`, `timestamp` |
+| `metadata` | Entity registry | `entityName`, `displayName`, `primaryKey`, `status`, `visibility`, `schema`, `recordCount`, `activeVersionId`, `crudEnabled`, `allowedOperations`, `facets`, `archival` |
+| `records` | Data records | `entityName`, `primaryKey`, `versionId`, `data` (dynamic), `status`, `deleted`, `createdBy`, `updatedBy` |
+| `versions` | Version snapshots | `versionId`, `entityName`, `operation`, `createdBy`, `recordCount`, `changeSummary`, `status` |
+| `audit` | Activity log | `entityName`, `operation`, `actor`, `status`, `affectedRecords`, `timestamp` |
 | `settings` | App configuration | `key`, `value`, `updatedAt` |
-| `archives` | Archive metadata | `entity`, `archiveId`, `recordCount`, `filePath`, `createdAt` |
+| `archives` | Archive metadata | `entityName`, `archiveId`, `recordCount`, `filePath`, `createdAt` |
 
 ### Supported Operations
 
@@ -327,25 +328,50 @@ async function safeFindOne(collection, query) {
 }
 ```
 
-### Aggregation Pipeline (Facets)
+### aio-lib-db Query Limitations
+
+**IMPORTANT**: `@adobe/aio-lib-db` does not reliably support compound filters with booleans (`deleted: false`) or mixed-type values. The `$ne` operator is also unreliable.
+
+**Correct pattern** (used in all actions):
+```javascript
+// Query with simple string filter only
+const allRecords = await recordsCol.find({ entityName: entity }).toArray()
+
+// JS-level safety filter for deleted/status fields
+const active = allRecords.filter(r => r.deleted !== true && r.status !== 'deleted')
+```
+
+This pattern is used in `query-data`, `mdm-data`, `mdm-facets`, `file-list`, and `dashboard`.
+
+### Query Parameter Filtering
+
+When building data-level filters from URL query params, always parse from `params.__ow_query` using `URLSearchParams` — never iterate `Object.keys(params)` directly, as the Runtime injects IMS credentials and other system params that would corrupt the filter.
 
 ```javascript
-const pipeline = [
-  { $match: { entity: 'products', ...filters } },
-  { $facet: {
-    category: [
-      { $group: { _id: '$category', count: { $sum: 1 } } },
-      { $sort: { count: -1 } },
-      { $limit: 20 }
-    ],
-    brand: [
-      { $group: { _id: '$brand', count: { $sum: 1 } } },
-      { $sort: { count: -1 } },
-      { $limit: 20 }
-    ]
-  }}
-]
-const result = await db.collection('records').aggregate(pipeline)
+if (params.__ow_query) {
+  const queryParams = new URLSearchParams(params.__ow_query)
+  for (const [key, value] of queryParams.entries()) {
+    if (!systemParams.includes(key) && !key.startsWith('__') && value) {
+      dataFilters[key] = value
+    }
+  }
+}
+```
+
+### Facets / Aggregations
+
+Facet computation is done in JavaScript (not via MongoDB `$facet` pipeline) due to aio-lib-db filter limitations:
+
+```javascript
+// Count distinct values per facet field
+const valueCounts = {}
+for (const r of activeRecords) {
+  const val = r.data[fieldName]
+  if (val != null && val !== '') {
+    const strVal = String(val)
+    valueCounts[strVal] = (valueCounts[strVal] || 0) + 1
+  }
+}
 ```
 
 ---
@@ -392,12 +418,27 @@ Two JsonSchema sources pointing to Runtime actions:
 #### MDMData Source
 - **Base URL**: `https://{NAMESPACE}.adobeioruntime.net/api/v1/web/pimapp/mdm-data`
 - **Operations**: `mdmQuery` (list/search), `mdmRecord` (get by ID)
+- **Type generation**: Uses `responseSchema` (JSON Schema) — NOT `responseSample`
 - **Auth forwarding**: `x-forwarded-authorization` header
 
 #### MDMFacets Source
 - **Base URL**: `https://{NAMESPACE}.adobeioruntime.net/api/v1/web/pimapp/mdm-facets`
 - **Operations**: `mdmFacets` (facet config + live values)
+- **Type generation**: Uses `responseSchema` (JSON Schema) — NOT `responseSample`
 - **Auth forwarding**: `x-forwarded-authorization` header
+
+#### Dynamic Data Types
+
+The `data` field in query/record responses is typed as opaque JSON (`{}` in JSON Schema). This ensures the GraphQL schema works for **any entity** regardless of its fields — no Mesh redeployment needed when new entities are uploaded.
+
+```json
+"data": { "type": "array", "items": {} }
+```
+
+Query `data` as a scalar (no sub-field selection):
+```graphql
+{ mdmQuery(entity: "products", page: 1) { entity total data } }
+```
 
 ### Schema Types (`mesh/schema.graphql`)
 
@@ -425,25 +466,29 @@ type MDMQueryResponse {
   page: Int!
   pageSize: Int!
   total: Int!
-  data: JSON!
+  data: [JSON!]!          # Opaque JSON array — entity-agnostic, no sub-field selection
   aggregations: [Aggregation!]
 }
 
 type MDMRecordResponse {
   entity: String!
-  data: JSON!
+  data: JSON!             # Opaque JSON — entity-agnostic
 }
 
 type MDMFacetsResponse {
   entity: String!
   facetsEnabled: Boolean!
-  totalFields: Int!
-  facetableFields: Int!
-  config: [FacetConfig!]!
-  facets: [Aggregation!]
-  totalRecords: Int!
+  totalFields: Int
+  facetableFields: Int
+  config: JSON            # Opaque JSON for global facets config
+  facets: [FacetConfig!]!
+  totalRecords: Int
 }
 ```
+
+> **Note**: `data` fields are generated as `JSON` scalars from `responseSchema` files
+> (not from `responseSample`). This allows any entity's fields to pass through without
+> schema changes.
 
 ### Filter Passing Strategy
 
@@ -633,10 +678,11 @@ User → FileUpload UI → file-upload action
 ```
 QueryConsole UI → query-data action
   1. Parse entity, filters, pagination, sort params
-  2. Build MongoDB query from filters
-  3. Execute find() with projection, skip, limit, sort
-  4. If facets requested: run aggregate pipeline
-  5. Return { count, page, pageSize, total, data, aggregations }
+  2. Fetch all records for entity from DB (simple entityName filter)
+  3. JS-level filter: exclude deleted/inactive records
+  4. JS-level filter: apply data-level filters from __ow_query params
+  5. JS-level pagination: slice results
+  6. Return { count, page, pageSize, total, data }
 ```
 
 ### Query Flow (Public API via Mesh)
@@ -644,11 +690,12 @@ QueryConsole UI → query-data action
 ```
 External Client → API Mesh (GraphQL) → mdm-data action
   1. Mesh maps GraphQL args to query params
-  2. Action parses 'filters' JSON string
-  3. Build MongoDB query
-  4. Execute find + optional aggregation
-  5. Return JSON response
-  6. Mesh caches response (60s browser, 120s CDN)
+  2. Action parses 'filters' JSON string + __ow_query params
+  3. Fetch all records for entity from DB (simple entityName filter)
+  4. JS-level filter: exclude deleted/inactive, apply data filters
+  5. JS-level pagination + optional facet computation
+  6. Return JSON response (data as opaque JSON, no typed fields)
+  7. Mesh caches response (60s browser, 120s CDN)
 ```
 
 ### Archival Flow
@@ -757,6 +804,10 @@ async function safeFindOne(collection, query) {
 }
 ```
 
+### aio-lib-db Compound Filter Limitation
+
+All query/list actions use the JS-level safety filter pattern described in the [Database Layer](#database-layer) section. Never use `{ deleted: false, status: 'active' }` in `find()` or `countDocuments()` — these compound filters silently return zero results.
+
 ---
 
 ## Testing Strategy
@@ -864,9 +915,14 @@ Default Runtime timeout: 60 seconds. Archive operations on large entities may ne
 | `EADDRINUSE :9080` | Previous dev server still running | `lsof -ti :9080 | xargs kill -9` |
 | `EADDRINUSE :35729` | LiveReload port conflict | `lsof -ti :35729 | xargs kill -9` |
 | `Document not found` error | `findOne` with no match | Use `safeFindOne` pattern |
+| Query returns 0 records | Compound DB filter with booleans | Use JS-level filter pattern: `find({entityName})` then filter in JS |
+| Query returns 0 records | Runtime-injected params in filter | Parse filters from `params.__ow_query` only, not `Object.keys(params)` |
+| GraphQL `Cannot query field` | `responseSample` creates fixed types | Use `responseSchema` with `{}` items for dynamic data fields |
 | Empty entity picker | `entityName` vs `entity` field mismatch | Ensure picker uses `e.entityName` |
 | Mesh 404 on filters | Filters not JSON-encoded | Pass as `JSON.stringify({...})` |
 | Auth failure in Mesh | Missing `x-forwarded-authorization` | Check mesh.json operationHeaders |
+| 401 on CDN URL | No IMS token in standalone mode | Load via Experience Cloud Shell or set token in localStorage |
+| 500-001 in Experience Cloud | Wrong URL slug | Use namespace as slug: `experience.adobe.com/?devMode=true#/@org/custom-apps/{namespace}` |
 | Large file upload timeout | File exceeds Runtime limits | Increase timeout or chunk uploads |
 
 ### Debug Logging
@@ -941,4 +997,4 @@ aio api-mesh:get
 
 ---
 
-*DataHub v2.0.0 • Adobe App Builder • Node.js 22 • React Spectrum • API Mesh*
+*DataHub v0.0.1 • Adobe App Builder • Node.js 22 • React Spectrum • API Mesh*

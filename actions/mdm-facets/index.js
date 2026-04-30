@@ -47,7 +47,7 @@ async function main (params) {
     const entity = params.entity
     if (!entity) return createErrorResponse('Missing required parameter: entity', 400)
 
-    if (!/^[a-z][a-z0-9-]*$/.test(entity)) {
+    if (!/^[a-z][a-z0-9_-]*$/.test(entity)) {
       return createErrorResponse('Invalid entity name', 400)
     }
 
@@ -115,28 +115,42 @@ async function main (params) {
       ]
       const filters = {}
 
-      // Support filters as JSON string (from API Mesh) or as individual query params
-      if (params.filters) {
+      // Support filters as JSON string, key=value pairs, or individual query params
+      if (params.filters && params.filters !== 'undefined') {
         try {
           const parsed = typeof params.filters === 'string' ? JSON.parse(params.filters) : params.filters
           if (parsed && typeof parsed === 'object') {
             Object.assign(filters, parsed)
           }
         } catch (e) {
-          logger.warn('Could not parse filters param:', params.filters)
+          // Not valid JSON — parse as key=value pairs (e.g. "sku=1" or "sku=1,name=test" or "sku=1&name=test")
+          const pairs = params.filters.split(/[,&]/)
+          for (const pair of pairs) {
+            const eqIdx = pair.indexOf('=')
+            if (eqIdx > 0) {
+              const key = decodeURIComponent(pair.substring(0, eqIdx).trim())
+              const val = decodeURIComponent(pair.substring(eqIdx + 1).trim())
+              if (key) filters[key] = val
+            }
+          }
         }
       }
 
-      Object.keys(params).forEach(key => {
-        if (!systemParams.includes(key) && !key.startsWith('__')) {
-          filters[key] = params[key]
+      // Pick up individual filter params from URL query string only
+      if (params.__ow_query) {
+        const queryParams = new URLSearchParams(params.__ow_query)
+        for (const [key, value] of queryParams.entries()) {
+          if (!systemParams.includes(key) && !key.startsWith('__') && value) {
+            filters[key] = value
+          }
         }
-      })
+      }
 
-      const baseFilter = { entityName: entity, deleted: false, status: 'active' }
-      Object.keys(filters).forEach(key => {
-        baseFilter[`data.${key}`] = { $regex: `^${escapeRegex(filters[key])}$`, $options: 'i' }
-      })
+      // Query with entityName only — aio-lib-db does not reliably support
+      // compound filters with booleans. JS-level safety filter applied after fetch.
+      const allRecords = await recordsCol.find({ entityName: entity }).toArray()
+      const activeRecords = allRecords.filter(r => r.deleted !== true && r.status !== 'deleted')
+      const filterKeys = Object.keys(filters)
 
       // Compute aggregation for each facet field
       for (const facet of response.facets) {
@@ -144,36 +158,44 @@ async function main (params) {
         const maxValues = facet.limit || facetsConfig.maxValuesPerFacet || 100
 
         // Exclude current field from filter for "OR" style faceting (shows all options)
-        const facetFilter = { ...baseFilter }
-        delete facetFilter[`data.${fieldName}`]
+        const facetRecords = activeRecords.filter(r => {
+          if (!r.data) return false
+          return filterKeys.every(key => {
+            if (key === fieldName) return true
+            const pattern = new RegExp(`^${escapeRegex(filters[key])}$`, 'i')
+            return pattern.test(String(r.data[key] || ''))
+          })
+        })
 
-        const pipeline = [
-          { $match: facetFilter },
-          { $group: { _id: `$data.${fieldName}`, count: { $sum: 1 } } },
-          { $match: { _id: { $ne: null } } }
-        ]
-
-        if (facet.sortBy === 'count') {
-          pipeline.push({ $sort: { count: facet.sortOrder === 'asc' ? 1 : -1 } })
-        } else {
-          pipeline.push({ $sort: { _id: facet.sortOrder === 'asc' ? 1 : -1 } })
+        // Count distinct values
+        const valueCounts = {}
+        for (const r of facetRecords) {
+          const val = r.data[fieldName]
+          if (val != null && val !== '') {
+            const strVal = String(val)
+            valueCounts[strVal] = (valueCounts[strVal] || 0) + 1
+          }
         }
 
-        pipeline.push({ $limit: maxValues })
+        // Sort facet values
+        let sortedValues = Object.entries(valueCounts)
+        if (facet.sortBy === 'count') {
+          sortedValues.sort((a, b) => facet.sortOrder === 'asc' ? a[1] - b[1] : b[1] - a[1])
+        } else {
+          sortedValues.sort((a, b) => facet.sortOrder === 'asc' ? a[0].localeCompare(b[0]) : b[0].localeCompare(a[0]))
+        }
+        sortedValues = sortedValues.slice(0, maxValues)
 
-        const results = await recordsCol.aggregate(pipeline).toArray()
-
-        facet.values = results.map(r => ({
-          value: r._id,
-          count: r.count,
-          selected: filters[fieldName] ? String(filters[fieldName]).toLowerCase() === String(r._id).toLowerCase() : false
+        facet.values = sortedValues.map(([value, count]) => ({
+          value,
+          count,
+          selected: filters[fieldName] ? String(filters[fieldName]).toLowerCase() === value.toLowerCase() : false
         }))
-        facet.totalValues = results.length
+        facet.totalValues = sortedValues.length
       }
 
-      // Also return total matching count
-      const totalMatching = await recordsCol.countDocuments(baseFilter)
-      response.totalRecords = totalMatching
+      // Total active records for this entity
+      response.totalRecords = activeRecords.length
     }
 
     return createResponse(response)

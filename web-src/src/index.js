@@ -94,8 +94,8 @@ function bootstrapInExcShell () {
   // set solution info, shortTitle is used when window is too small to display full title
   runtime.solution = {
     icon: 'AdobeExperienceCloud',
-    title: 'pimapp',
-    shortTitle: 'JGR'
+    title: 'DataHub — Enterprise Data Platform',
+    shortTitle: 'DataHub'
   }
-  runtime.title = 'pimapp'
+  runtime.title = 'DataHub'
 }

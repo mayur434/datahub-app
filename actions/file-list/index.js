@@ -16,7 +16,7 @@ async function main (params) {
     client = await getDbClient(params)
     const metaCol = await client.collection(COLLECTIONS.METADATA)
 
-    const files = await metaCol.find({ status: { $ne: 'deleted' } })
+    const allFiles = await metaCol.find({ status: { $ne: 'deleted' } })
       .project({
         entityName: 1, displayName: 1, description: 1, originalFileName: 1,
         primaryKey: 1, status: 1, visibility: 1, crudEnabled: 1,
@@ -25,6 +25,9 @@ async function main (params) {
       })
       .sort({ updatedAt: -1 })
       .toArray()
+
+    // JS-level safety filter: aio-lib-db may not support $ne operator
+    const files = allFiles.filter(f => f.status !== 'deleted')
 
     return createResponse({ files, total: files.length })
   } catch (error) {

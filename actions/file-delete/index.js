@@ -22,8 +22,17 @@ async function main (params) {
     const metaCol = await client.collection(COLLECTIONS.METADATA)
 
     const metadata = await safeFindOne(metaCol, { entityName: entity })
-    if (!metadata || metadata.status === 'deleted') {
+    if (!metadata) {
       return createErrorResponse(`Entity '${entity}' not found`, 404)
+    }
+
+    // Already deleted — return success (idempotent)
+    if (metadata.status === 'deleted') {
+      return createResponse({
+        status: 'success',
+        entity,
+        message: `Entity '${entity}' is already deleted`
+      })
     }
 
     // Create tombstone version

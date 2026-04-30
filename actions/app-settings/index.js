@@ -15,7 +15,7 @@ const DEFAULT_SETTINGS = {
     environment: 'production',
     defaultVisibility: 'private',
     defaultCrudEnabled: true,
-    entityNamePattern: '^[a-z][a-z0-9-]*$',
+    entityNamePattern: '^[a-z][a-z0-9_-]*$',
     timezone: 'UTC'
   },
   dataManagement: {

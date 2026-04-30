@@ -284,10 +284,12 @@ function FileUpload ({ runtime, ims }) {
           <Well>
             <Flex direction='column' gap='size-200'>
               <TextField label='Entity Name' value={entityName} onChange={setEntityName}
-                description='Lowercase, alphanumeric with hyphens (e.g., product-master)' isRequired />
+                description='Lowercase, alphanumeric with hyphens or underscores (e.g., product-master)' isRequired />
               <TextField label='Display Name' value={displayName} onChange={setDisplayName} isRequired />
               <TextArea label='Description' value={description} onChange={setDescription} />
-              <Picker label='Primary Key Column' selectedKey={primaryKey} onSelectionChange={setPrimaryKey} isRequired>
+              <Picker label='Primary Key Column (optional)' selectedKey={primaryKey} onSelectionChange={setPrimaryKey}
+                description='If not selected, an auto-generated entity_id will be used'>
+                <Item key=''>None (auto-generate entity_id)</Item>
                 {headers.map(h => <Item key={h}>{h}</Item>)}
               </Picker>
               <Picker label='Visibility' selectedKey={visibility} onSelectionChange={setVisibility}>
@@ -301,7 +303,7 @@ function FileUpload ({ runtime, ims }) {
           </Well>
           <Flex justifyContent='space-between' marginTop='size-200'>
             <Button variant='secondary' onPress={() => setStep(2)}>Back</Button>
-            <Button variant='cta' isDisabled={!entityName || !primaryKey} onPress={() => setStep(4)}>
+            <Button variant='cta' isDisabled={!entityName} onPress={() => setStep(4)}>
               Next: Define Schema
             </Button>
           </Flex>
@@ -367,7 +369,7 @@ function FileUpload ({ runtime, ims }) {
               <Text><strong>Entity Name:</strong> {entityName}</Text>
               <Text><strong>Display Name:</strong> {displayName}</Text>
               <Text><strong>Description:</strong> {description || '(none)'}</Text>
-              <Text><strong>Primary Key:</strong> {primaryKey}</Text>
+              <Text><strong>Primary Key:</strong> {primaryKey || 'entity_id (auto-generated)'}</Text>
               <Text><strong>Visibility:</strong> {visibility}</Text>
               <Text><strong>CRUD Enabled:</strong> {crudEnabled ? 'Yes' : 'No'}</Text>
               <Text><strong>Queryable Fields:</strong> {queryableFields.join(', ') || '(none)'}</Text>\n              <Text><strong>Required Fields:</strong> {requiredFields.join(', ') || '(none)'}</Text>

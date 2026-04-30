@@ -48,7 +48,7 @@ async function main (params) {
     const entity = params.entity
     if (!entity) return createErrorResponse('Missing required parameter: entity', 400)
 
-    if (!/^[a-z][a-z0-9-]*$/.test(entity)) {
+    if (!/^[a-z][a-z0-9_-]*$/.test(entity)) {
       return createErrorResponse('Invalid entity name', 400)
     }
 
@@ -92,55 +92,77 @@ async function main (params) {
     ]
     const filters = {}
 
-    // Support filters as JSON string (from API Mesh) or as individual query params
-    if (params.filters) {
+    // Support filters as JSON string, key=value pairs, or individual query params
+    if (params.filters && params.filters !== 'undefined') {
       try {
         const parsed = typeof params.filters === 'string' ? JSON.parse(params.filters) : params.filters
         if (parsed && typeof parsed === 'object') {
           Object.assign(filters, parsed)
         }
       } catch (e) {
-        // If not valid JSON, ignore
-        logger.warn('Could not parse filters param:', params.filters)
+        // Not valid JSON — parse as key=value pairs (e.g. "sku=1" or "sku=1,name=test" or "sku=1&name=test")
+        const pairs = params.filters.split(/[,&]/)
+        for (const pair of pairs) {
+          const eqIdx = pair.indexOf('=')
+          if (eqIdx > 0) {
+            const key = decodeURIComponent(pair.substring(0, eqIdx).trim())
+            const val = decodeURIComponent(pair.substring(eqIdx + 1).trim())
+            if (key) filters[key] = val
+          }
+        }
       }
     }
 
-    // Also pick up individual filter params (for direct REST calls / Query Console)
-    Object.keys(params).forEach(key => {
-      if (!systemParams.includes(key) && !key.startsWith('__')) {
-        filters[key] = params[key]
+    // Also pick up individual filter params from the actual URL query string only
+    // (avoids runtime-injected params being treated as data filters)
+    if (params.__ow_query) {
+      const queryParams = new URLSearchParams(params.__ow_query)
+      for (const [key, value] of queryParams.entries()) {
+        if (!systemParams.includes(key) && !key.startsWith('__') && value) {
+          filters[key] = value
+        }
       }
-    })
+    }
 
     const page = Math.max(1, parseInt(params.page) || 1)
     const pageSize = Math.min(100, Math.max(1, parseInt(params.pageSize) || 25))
-    const sort = params.sort || metadata.primaryKey
+    const sort = (params.sort && params.sort !== 'undefined') ? params.sort : metadata.primaryKey
     const order = params.order === 'desc' ? 'desc' : 'asc'
-    const fields = params.fields ? params.fields.split(',').map(f => f.trim()) : null
+    const fields = (params.fields && params.fields !== 'undefined') ? params.fields.split(',').map(f => f.trim()) : null
 
     // --- Query from DB ---
     const recordsCol = await client.collection('records')
 
-    // Build MongoDB filter
-    const dbFilter = { entityName: entity, deleted: false, status: 'active' }
-    Object.keys(filters).forEach(key => {
-      dbFilter[`data.${key}`] = { $regex: `^${escapeRegex(filters[key])}$`, $options: 'i' }
-    })
-
-    // Get total count
-    const total = await recordsCol.countDocuments(dbFilter)
-
-    // Query with sort + pagination
+    // Query with entityName only — aio-lib-db does not reliably support
+    // compound filters with booleans (deleted: false) or mixed types.
+    // JS-level safety filter applied after fetch (same pattern as file-list/dashboard).
     const sortDir = order === 'asc' ? 1 : -1
-    const cursor = recordsCol.find(dbFilter)
+    const allRecords = await recordsCol.find({ entityName: entity })
       .sort({ [`data.${sort}`]: sortDir })
-      .skip((page - 1) * pageSize)
-      .limit(pageSize)
+      .toArray()
 
-    const records = await cursor.toArray()
+    // JS-level safety filter: exclude deleted/inactive records
+    let filtered = allRecords.filter(r => r.deleted !== true && r.status !== 'deleted')
+
+    // Apply data-level filters (case-insensitive match)
+    const filterKeys = Object.keys(filters)
+    if (filterKeys.length > 0) {
+      filtered = filtered.filter(r => {
+        if (!r.data) return false
+        return filterKeys.every(key => {
+          const pattern = new RegExp(`^${escapeRegex(filters[key])}$`, 'i')
+          return pattern.test(String(r.data[key] || ''))
+        })
+      })
+    }
+
+    const total = filtered.length
+
+    // Apply pagination
+    const paged = filtered.slice((page - 1) * pageSize, page * pageSize)
 
     // Extract data and apply field selection
-    let responseData = records.map(r => r.data)
+    let responseData = paged.map(r => r.data)
     if (fields && fields.length > 0) {
       responseData = responseData.map(record => {
         const selected = {}
@@ -161,7 +183,8 @@ async function main (params) {
     // --- Compute aggregations/facets if configured ---
     const facetsParam = params.facets
     const shouldReturnFacets = metadata.facets && metadata.facets.enabled &&
-      (metadata.facets.returnWithQuery || facetsParam === 'true' || facetsParam === '1')
+      (metadata.facets.returnWithQuery || facetsParam === 'true' || facetsParam === '1') &&
+      facetsParam !== 'undefined'
 
     if (shouldReturnFacets && metadata.facets.fields && metadata.facets.fields.length > 0) {
       const aggregations = []
@@ -170,28 +193,36 @@ async function main (params) {
         const fieldName = facetConfig.field
         const maxValues = facetConfig.limit || metadata.facets.maxValuesPerFacet || 100
 
-        // Build aggregation pipeline
-        // Use base filter (entity + deleted + status) + current filters EXCEPT the facet field itself
-        const facetFilter = { ...dbFilter }
-        delete facetFilter[`data.${fieldName}`]
+        // Compute facet values from active records, excluding the current facet field filter
+        const facetRecords = allRecords.filter(r => {
+          if (r.deleted === true || r.status === 'deleted') return false
+          if (!r.data) return false
+          // Apply all data filters EXCEPT the current facet field
+          return filterKeys.every(key => {
+            if (key === fieldName) return true
+            const pattern = new RegExp(`^${escapeRegex(filters[key])}$`, 'i')
+            return pattern.test(String(r.data[key] || ''))
+          })
+        })
 
-        // Aggregate distinct values and counts
-        const pipeline = [
-          { $match: facetFilter },
-          { $group: { _id: `$data.${fieldName}`, count: { $sum: 1 } } },
-          { $match: { _id: { $ne: null } } }
-        ]
-
-        // Sort
-        if (facetConfig.sortBy === 'count') {
-          pipeline.push({ $sort: { count: facetConfig.sortOrder === 'asc' ? 1 : -1 } })
-        } else {
-          pipeline.push({ $sort: { _id: facetConfig.sortOrder === 'asc' ? 1 : -1 } })
+        // Count distinct values
+        const valueCounts = {}
+        for (const r of facetRecords) {
+          const val = r.data[fieldName]
+          if (val != null && val !== '') {
+            const strVal = String(val)
+            valueCounts[strVal] = (valueCounts[strVal] || 0) + 1
+          }
         }
 
-        pipeline.push({ $limit: maxValues })
-
-        const facetResults = await recordsCol.aggregate(pipeline).toArray()
+        // Sort facet values
+        let sortedValues = Object.entries(valueCounts)
+        if (facetConfig.sortBy === 'count') {
+          sortedValues.sort((a, b) => facetConfig.sortOrder === 'asc' ? a[1] - b[1] : b[1] - a[1])
+        } else {
+          sortedValues.sort((a, b) => facetConfig.sortOrder === 'asc' ? a[0].localeCompare(b[0]) : b[0].localeCompare(a[0]))
+        }
+        sortedValues = sortedValues.slice(0, maxValues)
 
         aggregations.push({
           field: fieldName,
@@ -199,10 +230,10 @@ async function main (params) {
           type: facetConfig.type || 'value',
           showCount: facetConfig.showCount !== false,
           collapsed: facetConfig.collapsed || false,
-          values: facetResults.map(r => ({
-            value: r._id,
-            count: r.count,
-            selected: filters[fieldName] ? String(filters[fieldName]).toLowerCase() === String(r._id).toLowerCase() : false
+          values: sortedValues.map(([value, count]) => ({
+            value,
+            count,
+            selected: filters[fieldName] ? String(filters[fieldName]).toLowerCase() === value.toLowerCase() : false
           }))
         })
       }

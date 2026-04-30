@@ -35,9 +35,9 @@ async function main (params) {
       return createResponse({ entity, data: record.data })
     }
 
-    // Build filter from query params
+    // Build data-level filters from query params
     const systemParams = ['entity', 'id', 'page', 'pageSize', 'sort', 'order', 'fields', 'filter', 'filters', '__ow_method', '__ow_headers', '__ow_path', '__ow_query', '__ow_body', '__ims_oauth_s2s', 'LOG_LEVEL', 'apiKey']
-    const filter = { entityName: entity, deleted: false, status: 'active' }
+    const dataFilters = {}
 
     // Parse 'filter' param: format is "field=value&field2=value2" or "field=value"
     if (params.filter) {
@@ -48,7 +48,7 @@ async function main (params) {
           const key = part.substring(0, eqIdx).trim()
           const val = part.substring(eqIdx + 1).trim()
           if (key && val) {
-            filter[`data.${key}`] = { $regex: `^${escapeRegex(val)}$`, $options: 'i' }
+            dataFilters[key] = val
           }
         }
       })
@@ -60,18 +60,22 @@ async function main (params) {
         const parsed = typeof params.filters === 'string' ? JSON.parse(params.filters) : params.filters
         if (parsed && typeof parsed === 'object') {
           Object.keys(parsed).forEach(key => {
-            filter[`data.${key}`] = { $regex: `^${escapeRegex(parsed[key])}$`, $options: 'i' }
+            dataFilters[key] = parsed[key]
           })
         }
       } catch (e) { /* ignore invalid JSON */ }
     }
 
-    // Also pick up individual filter params (direct key=value in query string)
-    Object.keys(params).forEach(key => {
-      if (!systemParams.includes(key) && !key.startsWith('__')) {
-        filter[`data.${key}`] = { $regex: `^${escapeRegex(params[key])}$`, $options: 'i' }
+    // Pick up individual filter params from the actual URL query string only
+    // (avoids runtime-injected params like IMS credentials being treated as data filters)
+    if (params.__ow_query) {
+      const queryParams = new URLSearchParams(params.__ow_query)
+      for (const [key, value] of queryParams.entries()) {
+        if (!systemParams.includes(key) && !key.startsWith('__') && value) {
+          dataFilters[key] = value
+        }
       }
-    })
+    }
 
     // Pagination / sorting
     const page = Math.max(1, parseInt(params.page) || 1)
@@ -80,25 +84,35 @@ async function main (params) {
     const order = params.order === 'desc' ? -1 : 1
     const fields = params.fields ? params.fields.split(',').map(f => f.trim()) : null
 
-    // Get total count
-    const total = await recordsCol.countDocuments(filter)
-
-    // Query with pagination
-    let cursor = recordsCol.find(filter)
+    // Query with entityName only — aio-lib-db does not reliably support
+    // compound filters with booleans (deleted: false) or status strings.
+    // JS-level safety filter is applied after fetch (same pattern as file-list/dashboard).
+    const allRecords = await recordsCol.find({ entityName: entity })
       .sort({ [`data.${sort}`]: order })
-      .skip((page - 1) * pageSize)
-      .limit(pageSize)
+      .toArray()
 
-    // Field projection
-    if (fields && fields.length > 0) {
-      const projection = { 'data': 1 }
-      cursor = cursor.project(projection)
+    // JS-level safety filter: exclude deleted/inactive records
+    let filtered = allRecords.filter(r => r.deleted !== true && r.status !== 'deleted')
+
+    // Apply data-level filters (case-insensitive match)
+    const filterKeys = Object.keys(dataFilters)
+    if (filterKeys.length > 0) {
+      filtered = filtered.filter(r => {
+        if (!r.data) return false
+        return filterKeys.every(key => {
+          const pattern = new RegExp(`^${escapeRegex(dataFilters[key])}$`, 'i')
+          return pattern.test(String(r.data[key] || ''))
+        })
+      })
     }
 
-    const records = await cursor.toArray()
+    const total = filtered.length
+
+    // Apply pagination
+    const paged = filtered.slice((page - 1) * pageSize, page * pageSize)
 
     // Extract data field and apply field selection
-    let responseData = records.map(r => r.data)
+    let responseData = paged.map(r => r.data)
     if (fields && fields.length > 0) {
       responseData = responseData.map(record => {
         const selected = {}

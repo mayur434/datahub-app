@@ -20,7 +20,9 @@ async function main (params) {
     const versionCol = await client.collection(COLLECTIONS.VERSIONS)
 
     // Get all active entities
-    const files = await metaCol.find({ status: { $ne: 'deleted' } }).toArray()
+    // JS-level safety filter: aio-lib-db may not support $ne operator
+    const allFiles = await metaCol.find({ status: { $ne: 'deleted' } }).toArray()
+    const files = allFiles.filter(f => f.status !== 'deleted')
 
     let totalRecords = 0
     let publicApis = 0

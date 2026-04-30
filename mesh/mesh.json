@@ -5,7 +5,7 @@
         "name": "MDMData",
         "handler": {
           "JsonSchema": {
-            "baseUrl": "https://108480-pimapp-stage.adobeioruntime.net/api/v1/web/pimapp/mdm-data",
+            "baseUrl": "https://108480-pimapp.adobeioruntime.net/api/v1/web/pimapp/mdm-data",
             "operationHeaders": {
               "x-forwarded-authorization": "{context.headers['authorization']}"
             },
@@ -15,7 +15,7 @@
                 "field": "mdmQuery",
                 "path": "/?entity={args.entity}&page={args.page}&pageSize={args.pageSize}&sort={args.sort}&order={args.order}&fields={args.fields}&facets={args.facets}&filters={args.filters}",
                 "method": "GET",
-                "responseSample": "./mesh/response-samples/mdm-query.json",
+                "responseSchema": "./response-schemas/mdm-query.schema.json",
                 "argTypeMap": {
                   "entity": {
                     "type": "String!"
@@ -48,7 +48,7 @@
                 "field": "mdmRecord",
                 "path": "/?entity={args.entity}&id={args.id}",
                 "method": "GET",
-                "responseSample": "./mesh/response-samples/mdm-record.json",
+                "responseSchema": "./response-schemas/mdm-record.schema.json",
                 "argTypeMap": {
                   "entity": {
                     "type": "String!"
@@ -60,20 +60,13 @@
               }
             ]
           }
-        },
-        "transforms": [
-          {
-            "filterSchema": {
-              "mode": "bare"
-            }
-          }
-        ]
+        }
       },
       {
         "name": "MDMFacets",
         "handler": {
           "JsonSchema": {
-            "baseUrl": "https://NAMESPACE.adobeioruntime.net/api/v1/web/pimapp/mdm-facets",
+            "baseUrl": "https://108480-pimapp-stage.adobeioruntime.net/api/v1/web/pimapp/mdm-facets",
             "operationHeaders": {
               "x-forwarded-authorization": "{context.headers['authorization']}"
             },
@@ -83,7 +76,7 @@
                 "field": "mdmFacets",
                 "path": "/?entity={args.entity}&values={args.values}&filters={args.filters}",
                 "method": "GET",
-                "responseSample": "./mesh/response-samples/mdm-facets.json",
+                "responseSchema": "./response-schemas/mdm-facets.schema.json",
                 "argTypeMap": {
                   "entity": {
                     "type": "String!"
@@ -98,14 +91,7 @@
               }
             ]
           }
-        },
-        "transforms": [
-          {
-            "filterSchema": {
-              "mode": "bare"
-            }
-          }
-        ]
+        }
       }
     ],
     "responseConfig": {

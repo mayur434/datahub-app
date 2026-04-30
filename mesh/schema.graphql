@@ -4,9 +4,21 @@ AEM MDM - API Mesh Common Schema
 This schema is ENTITY-AGNOSTIC. The same schema serves all master data entities.
 No changes required when a new CSV/entity is uploaded.
 
-The `data` field returns JSON objects whose shape depends on the entity's schema.
-Consumers use the `entity` argument to specify which master data to query.
+The `data` field returns opaque JSON objects (JSON scalar) whose shape depends
+on the entity's schema. Consumers query `data` without specifying sub-fields.
+Use the `fields` argument to select specific columns if needed.
+
 Filters are passed as query params that map to the entity's queryable columns.
+
+Usage examples:
+  # Query all records — data comes back as raw JSON
+  { mdmQuery(entity: "exportdata", page: 1, pageSize: 25) { entity count total data } }
+
+  # Filter by specific field
+  { mdmQuery(entity: "product", filters: "{\"brand\":\"Nike\"}") { entity total data } }
+
+  # Single record lookup
+  { mdmRecord(entity: "product", id: "ABC123") { entity data } }
 """
 
 scalar JSON

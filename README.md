@@ -241,8 +241,8 @@ query {
     sort: "name"
     order: "asc"
     fields: "name,sku,price"
-    facets: "category,brand"
-    filters: "{\"category\":\"electronics\",\"price_min\":10}"
+    facets: "true"
+    filters: "{\"category\":\"electronics\",\"brand\":\"Sony\"}"
   ) {
     entity
     count
@@ -263,6 +263,9 @@ query {
   }
 }
 ```
+
+> **Note**: `data` returns opaque JSON objects — do NOT select sub-fields on it.
+> The schema is entity-agnostic; all field data comes through as raw JSON.
 
 #### `mdmRecord` — Get single record by ID
 
@@ -288,7 +291,8 @@ query {
     facetsEnabled
     totalFields
     facetableFields
-    config {
+    config
+    facets {
       field
       label
       type
@@ -298,8 +302,11 @@ query {
       values {
         value
         count
+        selected
       }
+      totalValues
     }
+    totalRecords
   }
 }
 ```
@@ -340,6 +347,22 @@ aio app dev
 ```
 
 App runs at `https://localhost:9080`. Actions are served locally.
+
+### Accessing the Deployed App
+
+The app runs inside the **Adobe Experience Cloud Shell** with full IMS authentication:
+
+```
+https://experience.adobe.com/?devMode=true#/@<your-org>/custom-apps/<namespace>
+```
+
+For direct CDN access (standalone mode), set the IMS token manually:
+```javascript
+// Browser console at https://<namespace>.adobeio-static.net/index.html
+localStorage.setItem('mdm_ims_token', '<your-token>')
+localStorage.setItem('mdm_ims_org', '<your-org-id>')
+location.reload()
+```
 
 ### Run Tests
 

@@ -1,0 +1,8 @@
+{
+  "type": "object",
+  "properties": {
+    "entity": { "type": "string" },
+    "data": {}
+  },
+  "required": ["entity", "data"]
+}
