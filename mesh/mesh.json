@@ -5,7 +5,7 @@
         "name": "MDMData",
         "handler": {
           "JsonSchema": {
-            "baseUrl": "https://108480-pimapp.adobeioruntime.net/api/v1/web/pimapp/mdm-data",
+            "baseUrl": "{env.BASE_URL}/mdm-data",
             "operationHeaders": {
               "x-forwarded-authorization": "{context.headers['authorization']}"
             },
@@ -66,7 +66,7 @@
         "name": "MDMFacets",
         "handler": {
           "JsonSchema": {
-            "baseUrl": "https://108480-pimapp-stage.adobeioruntime.net/api/v1/web/pimapp/mdm-facets",
+            "baseUrl": "{env.BASE_URL}/mdm-facets",
             "operationHeaders": {
               "x-forwarded-authorization": "{context.headers['authorization']}"
             },
