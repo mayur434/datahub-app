@@ -390,6 +390,16 @@ function parseRecordData (params) {
   return null
 }
 
+async function getNextAutoIncrementId (masterCol, pkField) {
+  const allRecs = await masterCol.find({}).toArray()
+  let maxId = 0
+  for (const r of allRecs) {
+    const val = parseInt(r.data?.[pkField])
+    if (!isNaN(val) && val > maxId) maxId = val
+  }
+  return maxId + 1
+}
+
 async function handlePublicCreate (client, metaCol, masterCol, metadata, entity, params, partner) {
   const data = parseRecordData(params)
   if (!data || typeof data !== 'object') {
@@ -400,8 +410,13 @@ async function handlePublicCreate (client, metaCol, masterCol, metadata, entity,
   ;['createdAt', 'updatedAt', 'createdBy', 'updatedBy'].forEach(f => delete data[f])
 
   const pkField = metadata.primaryKey
-  if (!pkField || !data[pkField]) {
-    return createMutationResponse({ error: `Primary key field "${pkField}" is required` }, 400)
+  if (!pkField) {
+    return createMutationResponse({ error: 'Primary key field is not configured' }, 400)
+  }
+
+  // Auto-generate primary key if not provided (auto-increment)
+  if (!data[pkField]) {
+    data[pkField] = await getNextAutoIncrementId(masterCol, pkField)
   }
 
   // Check allowed operations (stored as object: { create: true, update: true, ... })
@@ -491,6 +506,10 @@ async function handlePublicUpdate (client, masterCol, metadata, entity, params, 
   const existing = await safeFindOne(masterCol, { primaryKey: id, deleted: false })
   if (!existing) return createMutationResponse({ error: `Record '${id}' not found` }, 404)
 
+  // Primary key is immutable — preserve existing value
+  const pkField = metadata.primaryKey
+  if (pkField) data[pkField] = existing.data[pkField]
+
   // Validate against schema
   if (metadata.schema && metadata.schema.length > 0) {
     const validationErrors = validateRecord(data, metadata.schema)
@@ -553,6 +572,10 @@ async function handlePublicPatch (client, masterCol, metadata, entity, params, p
 
   // Strip system fields — auto-managed server-side
   ;['createdAt', 'updatedAt', 'createdBy', 'updatedBy'].forEach(f => delete data[f])
+
+  // Primary key is immutable — cannot be changed via patch
+  const pkField = metadata.primaryKey
+  if (pkField) delete data[pkField]
 
   // Merge: existing data + patch fields
   const merged = { ...existing.data, ...data }
@@ -694,6 +717,7 @@ async function handleBulkCreate (client, metaCol, masterCol, metadata, entity, p
 
   const now = getTimezoneDate(params)
   const partnerActor = `partner:${partner.name}`
+  let nextAutoId = await getNextAutoIncrementId(masterCol, pkField)
   const results = []
 
   for (const data of records) {
@@ -704,9 +728,14 @@ async function handleBulkCreate (client, metaCol, masterCol, metadata, entity, p
       }
       ;['createdAt', 'updatedAt', 'createdBy', 'updatedBy'].forEach(f => delete data[f])
 
-      if (!pkField || !data[pkField]) {
-        results.push({ success: false, id: null, error: `Primary key "${pkField}" is required` })
+      if (!pkField) {
+        results.push({ success: false, id: null, error: 'Primary key field is not configured' })
         continue
+      }
+
+      // Auto-generate primary key if not provided (auto-increment)
+      if (!data[pkField]) {
+        data[pkField] = nextAutoId++
       }
       const pk = String(data[pkField])
 
@@ -784,6 +813,10 @@ async function handleBulkUpdate (client, masterCol, metadata, entity, params, pa
       const existing = await safeFindOne(masterCol, { primaryKey: id, deleted: false })
       if (!existing) { results.push({ success: false, id, error: 'Not found' }); continue }
 
+      // Primary key is immutable — preserve existing value
+      const pkField = metadata.primaryKey
+      if (pkField) data[pkField] = existing.data[pkField]
+
       if (metadata.schema && metadata.schema.length > 0) {
         const errors = validateRecord(data, metadata.schema)
         if (errors.length > 0) {
@@ -846,6 +879,10 @@ async function handleBulkPatch (client, masterCol, metadata, entity, params, par
       if (!id) { results.push({ success: false, id: null, error: 'Missing "id"' }); continue }
       if (!data || typeof data !== 'object') { results.push({ success: false, id, error: 'Missing or invalid "data"' }); continue }
       ;['createdAt', 'updatedAt', 'createdBy', 'updatedBy'].forEach(f => delete data[f])
+
+      // Primary key is immutable — cannot be changed via patch
+      const pkField = metadata.primaryKey
+      if (pkField) delete data[pkField]
 
       const existing = await safeFindOne(masterCol, { primaryKey: id, deleted: false })
       if (!existing) { results.push({ success: false, id, error: 'Not found' }); continue }
