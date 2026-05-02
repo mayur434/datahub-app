@@ -7,17 +7,19 @@
           "JsonSchema": {
             "baseUrl": "{env.BASE_URL}/mdm-data",
             "operationHeaders": {
-              "x-forwarded-authorization": "{context.headers['authorization']}"
+              "x-forwarded-authorization": "{context.headers['authorization']}",
+              "x-forwarded-x-partner-id": "{context.headers['x-partner-id']}",
+              "x-forwarded-x-partner-key": "{context.headers['x-partner-key']}"
             },
             "operations": [
               {
                 "type": "Query",
                 "field": "mdmQuery",
-                "path": "/?entity={args.entity}&page={args.page}&pageSize={args.pageSize}&sort={args.sort}&order={args.order}&fields={args.fields}&facets={args.facets}&filters={args.filters}",
+                "path": "/?master={args.master}&page={args.page}&pageSize={args.pageSize}&sort={args.sort}&order={args.order}&fields={args.fields}&facets={args.facets}&filters={args.filters}",
                 "method": "GET",
                 "responseSchema": "./response-schemas/mdm-query.schema.json",
                 "argTypeMap": {
-                  "entity": {
+                  "master": {
                     "type": "String!"
                   },
                   "page": {
@@ -46,14 +48,141 @@
               {
                 "type": "Query",
                 "field": "mdmRecord",
-                "path": "/?entity={args.entity}&id={args.id}",
+                "path": "/?master={args.master}&id={args.id}",
                 "method": "GET",
                 "responseSchema": "./response-schemas/mdm-record.schema.json",
                 "argTypeMap": {
-                  "entity": {
+                  "master": {
                     "type": "String!"
                   },
                   "id": {
+                    "type": "String!"
+                  }
+                }
+              },
+              {
+                "type": "Mutation",
+                "field": "mdmCreate",
+                "path": "/?master={args.master}",
+                "method": "POST",
+                "requestSchema": "./request-schemas/mutation-req.json",
+                "responseSchema": "./response-schemas/mdm-mutation.schema.json",
+                "argTypeMap": {
+                  "master": {
+                    "type": "String!"
+                  }
+                }
+              },
+              {
+                "type": "Mutation",
+                "field": "mdmUpdate",
+                "path": "/?master={args.master}&id={args.id}",
+                "method": "PUT",
+                "requestSchema": "./request-schemas/mutation-req.json",
+                "responseSchema": "./response-schemas/mdm-mutation.schema.json",
+                "argTypeMap": {
+                  "master": {
+                    "type": "String!"
+                  },
+                  "id": {
+                    "type": "String!"
+                  }
+                }
+              },
+              {
+                "type": "Mutation",
+                "field": "mdmPatch",
+                "path": "/?master={args.master}&id={args.id}",
+                "method": "PATCH",
+                "requestSchema": "./request-schemas/mutation-req.json",
+                "responseSchema": "./response-schemas/mdm-mutation.schema.json",
+                "argTypeMap": {
+                  "master": {
+                    "type": "String!"
+                  },
+                  "id": {
+                    "type": "String!"
+                  }
+                }
+              },
+              {
+                "type": "Mutation",
+                "field": "mdmDelete",
+                "path": "/?master={args.master}&id={args.id}",
+                "method": "DELETE",
+                "responseSchema": "./response-schemas/mdm-mutation.schema.json",
+                "argTypeMap": {
+                  "master": {
+                    "type": "String!"
+                  },
+                  "id": {
+                    "type": "String!"
+                  }
+                }
+              },
+              {
+                "type": "Query",
+                "field": "mdmBulkFetch",
+                "path": "/?master={args.master}&ids={args.ids}",
+                "method": "GET",
+                "responseSchema": "./response-schemas/bulk-fetch.schema.json",
+                "argTypeMap": {
+                  "master": {
+                    "type": "String!"
+                  },
+                  "ids": {
+                    "type": "String!"
+                  }
+                }
+              },
+              {
+                "type": "Mutation",
+                "field": "mdmBulkCreate",
+                "path": "/?master={args.master}&operation=bulkCreate",
+                "method": "POST",
+                "requestSchema": "./request-schemas/mutation-req.json",
+                "responseSchema": "./response-schemas/bulk-resp.schema.json",
+                "argTypeMap": {
+                  "master": {
+                    "type": "String!"
+                  }
+                }
+              },
+              {
+                "type": "Mutation",
+                "field": "mdmBulkUpdate",
+                "path": "/?master={args.master}&operation=bulkUpdate",
+                "method": "POST",
+                "requestSchema": "./request-schemas/mutation-req.json",
+                "responseSchema": "./response-schemas/bulk-resp.schema.json",
+                "argTypeMap": {
+                  "master": {
+                    "type": "String!"
+                  }
+                }
+              },
+              {
+                "type": "Mutation",
+                "field": "mdmBulkPatch",
+                "path": "/?master={args.master}&operation=bulkPatch",
+                "method": "POST",
+                "requestSchema": "./request-schemas/mutation-req.json",
+                "responseSchema": "./response-schemas/bulk-resp.schema.json",
+                "argTypeMap": {
+                  "master": {
+                    "type": "String!"
+                  }
+                }
+              },
+              {
+                "type": "Mutation",
+                "field": "mdmBulkDelete",
+                "path": "/?master={args.master}&operation=bulkDelete",
+                "method": "POST",
+                "requestSchema": "./request-schemas/mutation-req.json",
+                "responseSchema": "./response-schemas/bulk-resp.schema.json",
+                "argTypeMap": {
+                  "master": {
                     "type": "String!"
                   }
                 }
@@ -74,11 +203,11 @@
               {
                 "type": "Query",
                 "field": "mdmFacets",
-                "path": "/?entity={args.entity}&values={args.values}&filters={args.filters}",
+                "path": "/?master={args.master}&values={args.values}&filters={args.filters}",
                 "method": "GET",
                 "responseSchema": "./response-schemas/mdm-facets.schema.json",
                 "argTypeMap": {
-                  "entity": {
+                  "master": {
                     "type": "String!"
                   },
                   "values": {
@@ -93,11 +222,6 @@
           }
         }
       }
-    ],
-    "responseConfig": {
-      "headers": {
-        "Cache-Control": "public, max-age=60, s-maxage=120"
-      }
-    }
+    ]
   }
 }

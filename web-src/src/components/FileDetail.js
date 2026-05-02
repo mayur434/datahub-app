@@ -10,7 +10,7 @@ import Edit from '@spectrum-icons/workflow/Edit'
 import Copy from '@spectrum-icons/workflow/Copy'
 
 function FileDetail ({ runtime, ims }) {
-  const { entity } = useParams()
+  const { master } = useParams()
   const navigate = useNavigate()
   const notify = useNotifications()
   const [file, setFile] = useState(null)
@@ -19,12 +19,12 @@ function FileDetail ({ runtime, ims }) {
 
   useEffect(() => {
     loadFileDetail()
-  }, [entity])
+  }, [master])
 
   async function loadFileDetail () {
     try {
       setLoading(true)
-      const result = await fetchFileDetail(entity, ims)
+      const result = await fetchFileDetail(master, ims)
       setFile(result.file)
       setError(null)
     } catch (e) {
@@ -37,7 +37,7 @@ function FileDetail ({ runtime, ims }) {
   async function handleToggleVisibility () {
     try {
       const newVisibility = file.visibility === 'public' ? 'private' : 'public'
-      await updateVisibility(entity, newVisibility, ims)
+      await updateVisibility(master, newVisibility, ims)
       notify.success(`Visibility updated to ${newVisibility}`)
       await loadFileDetail()
     } catch (e) {
@@ -65,9 +65,9 @@ function FileDetail ({ runtime, ims }) {
       <View UNSAFE_className='mdm-page'>
         <div className='mdm-empty-state'>
           <div className='mdm-empty-state__icon'>⚠</div>
-          <Heading level={2}>Entity Not Found</Heading>
-          <Text>{error || 'The requested entity does not exist.'}</Text>
-          <Button variant='secondary' marginTop='size-200' onPress={() => navigate('/files')}>Back to Entities</Button>
+          <Heading level={2}>Master Not Found</Heading>
+          <Text>{error || 'The requested master does not exist.'}</Text>
+          <Button variant='secondary' marginTop='size-200' onPress={() => navigate('/masters')}>Back to Masters</Button>
         </div>
       </View>
     )
@@ -85,20 +85,20 @@ function FileDetail ({ runtime, ims }) {
             </StatusLight>
           </Flex>
           <Text UNSAFE_className='mdm-page__subtitle'>
-            {file.entityName} • {file.recordCount} records • Version {file.activeVersionId}
+            {file.masterName || file.entityName} • {file.recordCount} records • Version {file.activeVersionId}
           </Text>
         </View>
         <Flex gap='size-100' wrap>
-          <Button variant='secondary' onPress={() => navigate('/files')}>Back</Button>
-          <Button variant='primary' onPress={() => navigate(`/files/${entity}/records`)}>Records</Button>
-          <Button variant='primary' onPress={() => navigate(`/files/${entity}/schema`)}>Schema</Button>
-          <Button variant='primary' onPress={() => navigate(`/files/${entity}/versions`)}>Versions</Button>
-          <Button variant='primary' onPress={() => navigate(`/files/${entity}/archives`)}>Archives</Button>
+          <Button variant='secondary' onPress={() => navigate('/masters')}>Back</Button>
+          <Button variant='primary' onPress={() => navigate(`/masters/${master}/records`)}>Records</Button>
+          <Button variant='primary' onPress={() => navigate(`/masters/${master}/schema`)}>Schema</Button>
+          <Button variant='primary' onPress={() => navigate(`/masters/${master}/versions`)}>Versions</Button>
+          <Button variant='primary' onPress={() => navigate(`/masters/${master}/archives`)}>Archives</Button>
         </Flex>
       </Flex>
 
       {/* Tabbed Content */}
-      <Tabs aria-label='Entity details'>
+      <Tabs aria-label='Master details'>
         <TabList>
           <Item key='overview'>Overview</Item>
           <Item key='schema'>Schema</Item>
@@ -113,7 +113,7 @@ function FileDetail ({ runtime, ims }) {
                 <View UNSAFE_className='mdm-card'>
                   <Heading level={3} marginBottom='size-200'>Metadata</Heading>
                   <div className='mdm-detail-list'>
-                    <DetailRow label='Entity Name' value={file.entityName} />
+                    <DetailRow label='Master Name' value={file.masterName || file.entityName} />
                     <DetailRow label='Display Name' value={file.displayName} />
                     <DetailRow label='Description' value={file.description || '—'} />
                     <DetailRow label='Primary Key' value={file.primaryKey} />
@@ -121,6 +121,7 @@ function FileDetail ({ runtime, ims }) {
                     <DetailRow label='Created By' value={file.createdBy || '—'} />
                     <DetailRow label='Created At' value={file.createdAt ? new Date(file.createdAt).toLocaleString() : '—'} />
                     <DetailRow label='Updated At' value={file.updatedAt ? new Date(file.updatedAt).toLocaleString() : '—'} />
+                    <DetailRow label='Last Modified By' value={file.lastModifiedBy || file.createdBy || '—'} />
                   </div>
                 </View>
 
@@ -170,7 +171,7 @@ function FileDetail ({ runtime, ims }) {
             <View paddingTop='size-300'>
               <Flex justifyContent='space-between' alignItems='center' marginBottom='size-200'>
                 <Text>Schema Version: <strong>{file.schemaVersionId}</strong></Text>
-                <Button variant='primary' onPress={() => navigate(`/files/${entity}/schema`)}>
+                <Button variant='primary' onPress={() => navigate(`/masters/${master}/schema`)}>
                   Edit Schema
                 </Button>
               </Flex>
@@ -205,21 +206,21 @@ function FileDetail ({ runtime, ims }) {
           <Item key='api'>
             <View paddingTop='size-300'>
               <View UNSAFE_className='mdm-card' marginBottom='size-200'>
-                <Heading level={3} marginBottom='size-200'>API Mesh (Public)</Heading>
+                <Heading level={3} marginBottom='size-200'>API Mesh — Read (Public)</Heading>
                 <Text marginBottom='size-200'>
-                  Use the API Mesh GraphQL endpoint to query this entity's data publicly
+                  Use the API Mesh GraphQL endpoint to query this master's data publicly
                   {file.visibility === 'private' && ' (requires auth header)'}:
                 </Text>
                 <div className='mdm-code-block'>
                   <div className='mdm-code-block__header'>
                     <span>GraphQL Query</span>
-                    <ActionButton isQuiet onPress={() => copyToClipboard(`query {\n  mdmQuery(entity: "${entity}") {\n    entity count total data\n  }\n}`)}>
+                    <ActionButton isQuiet onPress={() => copyToClipboard(`query {\n  mdmQuery(master: "${master}") {\n    master count total data\n  }\n}`)}>
                       <Copy size='S' />
                     </ActionButton>
                   </div>
                   <pre className='mdm-code-block__content'>{`query {
-  mdmQuery(entity: "${entity}", page: 1, pageSize: 20) {
-    entity
+  mdmQuery(master: "${master}", page: 1, pageSize: 20) {
+    master
     count
     total
     data
@@ -227,6 +228,132 @@ function FileDetail ({ runtime, ims }) {
 }`}</pre>
                 </div>
               </View>
+
+              {/* Public CRUD Endpoints — only for public + crudEnabled entities */}
+              {file.visibility === 'public' && file.crudEnabled
+                ? (
+                  <View UNSAFE_className='mdm-card' marginBottom='size-200'>
+                    <Flex justifyContent='space-between' alignItems='center' marginBottom='size-200'>
+                      <Heading level={3}>API Mesh — CRUD Mutations</Heading>
+                      <StatusLight variant='positive'>Enabled</StatusLight>
+                    </Flex>
+                    <Text marginBottom='size-100'>
+                      These mutations require <code className='mdm-code-inline'>x-partner-id</code> and <code className='mdm-code-inline'>x-partner-key</code> headers.
+                      Manage partners in the <a href='#/partners'>Integration Partners</a> console.
+                    </Text>
+                    <Well marginBottom='size-200'>
+                      <Text><strong>Authentication:</strong> Pass <code className='mdm-code-inline'>x-partner-id</code> and <code className='mdm-code-inline'>x-partner-key</code> HTTP headers with every mutation request.</Text>
+                    </Well>
+
+                    {/* Create */}
+                    {(!file.allowedOperations || file.allowedOperations.create) && (
+                      <View marginBottom='size-200'>
+                        <div className='mdm-code-block'>
+                          <div className='mdm-code-block__header'>
+                            <span>Create Record</span>
+                            <ActionButton isQuiet onPress={() => copyToClipboard(`mutation {\n  mdmCreate(
+    master: "${master}"\n    data: "{\\"${file.primaryKey}\\":\\"NEW_ID\\",\\"field\\":\\"value\\"}"\n  ) {\n    success master record\n  }\n}`)}>
+                              <Copy size='S' />
+                            </ActionButton>
+                          </div>
+                          <pre className='mdm-code-block__content'>{`mutation {
+  mdmCreate(
+    master: "${master}"
+    data: "{\\"${file.primaryKey}\\":\\"NEW_ID\\",\\"field\\":\\"value\\"}"
+  ) {
+    success
+    master
+    record
+  }
+}`}</pre>
+                        </div>
+                      </View>
+                    )}
+
+                    {/* Update */}
+                    {(!file.allowedOperations || file.allowedOperations.update) && (
+                      <View marginBottom='size-200'>
+                        <div className='mdm-code-block'>
+                          <div className='mdm-code-block__header'>
+                            <span>Update Record (Full Replace)</span>
+                            <ActionButton isQuiet onPress={() => copyToClipboard(`mutation {\n  mdmUpdate(\n    master: "${master}"\n    id: "RECORD_ID"\n    data: "{\\"${file.primaryKey}\\":\\"RECORD_ID\\",\\"field\\":\\"new_value\\"}"\n  ) {\n    success record\n  }\n}`)}>
+                              <Copy size='S' />
+                            </ActionButton>
+                          </div>
+                          <pre className='mdm-code-block__content'>{`mutation {
+  mdmUpdate(
+    master: "${master}"
+    id: "RECORD_ID"
+    data: "{\\"${file.primaryKey}\\":\\"RECORD_ID\\",\\"field\\":\\"new_value\\"}"
+  ) {
+    success
+    record
+  }
+}`}</pre>
+                        </div>
+                      </View>
+                    )}
+
+                    {/* Patch */}
+                    {(!file.allowedOperations || file.allowedOperations.update) && (
+                      <View marginBottom='size-200'>
+                        <div className='mdm-code-block'>
+                          <div className='mdm-code-block__header'>
+                            <span>Patch Record (Partial Update)</span>
+                            <ActionButton isQuiet onPress={() => copyToClipboard(`mutation {\n  mdmPatch(\n    master: "${master}"\n    id: "RECORD_ID"\n    data: "{\\"field\\":\\"patched_value\\"}"\n  ) {\n    success record\n  }\n}`)}>
+                              <Copy size='S' />
+                            </ActionButton>
+                          </div>
+                          <pre className='mdm-code-block__content'>{`mutation {
+  mdmPatch(
+    master: "${master}"
+    id: "RECORD_ID"
+    data: "{\\"field\\":\\"patched_value\\"}"
+  ) {
+    success
+    record
+  }
+}`}</pre>
+                        </div>
+                      </View>
+                    )}
+
+                    {/* Delete */}
+                    {(!file.allowedOperations || file.allowedOperations.delete) && (
+                      <View marginBottom='size-200'>
+                        <div className='mdm-code-block'>
+                          <div className='mdm-code-block__header'>
+                            <span>Delete Record</span>
+                            <ActionButton isQuiet onPress={() => copyToClipboard(`mutation {\n  mdmDelete(\n    master: "${master}"\n    id: "RECORD_ID"\n  ) {\n    success id\n  }\n}`)}>
+                              <Copy size='S' />
+                            </ActionButton>
+                          </div>
+                          <pre className='mdm-code-block__content'>{`mutation {
+  mdmDelete(
+    master: "${master}"
+    id: "RECORD_ID"
+  ) {
+    success
+    id
+  }
+}`}</pre>
+                        </div>
+                      </View>
+                    )}
+                  </View>
+                  )
+                : (
+                  <View UNSAFE_className='mdm-card' marginBottom='size-200'>
+                    <Heading level={3} marginBottom='size-200'>API Mesh — CRUD Mutations</Heading>
+                    <Well>
+                      <Text>
+                        {file.visibility !== 'public'
+                          ? 'Public CRUD mutations are only available for masters with public visibility. Change the visibility above to enable.'
+                          : 'CRUD operations are currently disabled for this master. Enable them in the Configuration tab.'}
+                      </Text>
+                    </Well>
+                  </View>
+                  )}
 
               <View UNSAFE_className='mdm-card' marginBottom='size-200'>
                 <Heading level={3} marginBottom='size-200'>Admin Actions</Heading>
@@ -274,10 +401,24 @@ function FileDetail ({ runtime, ims }) {
                     <DetailRow label='Active Version' value={file.activeVersionId} />
                     <DetailRow label='Schema Version' value={file.schemaVersionId} />
                   </div>
-                  <Button variant='secondary' marginTop='size-200' onPress={() => navigate(`/files/${entity}/versions`)}>
+                  <Button variant='secondary' marginTop='size-200' onPress={() => navigate(`/masters/${master}/versions`)}>
                     View Version History
                   </Button>
                 </View>
+
+                {/* Partner Integration Info */}
+                {file.visibility === 'public' && file.crudEnabled && (
+                  <View UNSAFE_className='mdm-card'>
+                    <Heading level={3} marginBottom='size-200'>API Integration</Heading>
+                    <Text marginBottom='size-200'>
+                      CRUD mutations for this master are available via API Mesh.
+                      Partners must be onboarded via the Integration Partners console to get credentials.
+                    </Text>
+                    <Button variant='primary' onPress={() => navigate('/partners')}>
+                      Manage Partners
+                    </Button>
+                  </View>
+                )}
               </Flex>
             </View>
           </Item>

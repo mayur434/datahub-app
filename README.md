@@ -20,6 +20,7 @@
   - [Activity Log (Audit)](#activity-log-audit)
   - [Settings](#settings)
 - [API Access (GraphQL via API Mesh)](#api-access-graphql-via-api-mesh)
+- [Documentation](#documentation)
 - [Getting Started](#getting-started)
 - [Screenshots](#screenshots)
 
@@ -226,102 +227,103 @@ Global application configuration:
 
 ## API Access (GraphQL via API Mesh)
 
-DataHub exposes all data through Adobe API Mesh as a unified GraphQL endpoint.
+DataHub exposes all data through Adobe API Mesh as a unified GraphQL endpoint. The API supports **single-record** and **bulk** CRUD operations.
 
-### Available Queries
+### Endpoint
 
-#### `mdmQuery` — List & search records
+```
+POST https://edge-sandbox-graph.adobe.io/api/114b5a31-5c7f-4584-81eb-22241fc6411a/graphql
+```
+
+### Authentication
+
+| Header | Description |
+|--------|-------------|
+| `x-partner-id` | Partner ID for write operations |
+| `x-partner-key` | Partner API key for write operations |
+| `Content-Type` | `application/json` |
+
+Read operations are publicly accessible for public masters. Write operations require valid partner credentials.
+
+### Available Operations
+
+| # | Operation | Type | Description |
+|---|-----------|------|-------------|
+| 1 | `mdmQuery` | Query | Paginated list with filters, sort, field selection, facets |
+| 2 | `mdmRecord` | Query | Fetch single record by primary key |
+| 3 | `mdmBulkFetch` | Query | Fetch multiple records by comma-separated IDs |
+| 4 | `mdmFacets` | Query | Get facet aggregations for a master |
+| 5 | `mdmCreate` | Mutation | Create a single record |
+| 6 | `mdmUpdate` | Mutation | Full replace of a single record |
+| 7 | `mdmPatch` | Mutation | Partial update of a single record |
+| 8 | `mdmDelete` | Mutation | Soft-delete a single record |
+| 9 | `mdmBulkCreate` | Mutation | Create multiple records in one request |
+| 10 | `mdmBulkUpdate` | Mutation | Full replace multiple records |
+| 11 | `mdmBulkPatch` | Mutation | Partial update multiple records |
+| 12 | `mdmBulkDelete` | Mutation | Soft-delete multiple records |
+
+### Quick Example — Query Records
 
 ```graphql
-query {
+{
   mdmQuery(
-    entity: "products"
+    master: "productcatalog"
     page: 1
-    pageSize: 20
+    pageSize: 10
     sort: "name"
     order: "asc"
-    fields: "name,sku,price"
-    facets: "true"
-    filters: "{\"category\":\"electronics\",\"brand\":\"Sony\"}"
+    fields: "master_id,sku,name,price"
+    filters: "sku=CFG-TSHIRT"
   ) {
-    entity
+    master
     count
     page
     pageSize
     total
     data
-    aggregations {
-      field
-      label
-      type
-      values {
-        value
-        count
-        selected
-      }
+  }
+}
+```
+
+### Quick Example — Create Record
+
+```graphql
+mutation {
+  mdmCreate(
+    master: "productcatalog"
+    input: {
+      data: "{\"master_id\":\"NEW-001\",\"sku\":\"SKU-001\",\"name\":\"New Product\",\"price\":\"99.99\"}"
     }
-  }
-}
-```
-
-> **Note**: `data` returns opaque JSON objects — do NOT select sub-fields on it.
-> The schema is entity-agnostic; all field data comes through as raw JSON.
-
-#### `mdmRecord` — Get single record by ID
-
-```graphql
-query {
-  mdmRecord(entity: "products", id: "prod-12345") {
-    entity
-    data
-  }
-}
-```
-
-#### `mdmFacets` — Get facet configuration & live values
-
-```graphql
-query {
-  mdmFacets(
-    entity: "products"
-    values: "true"
-    filters: "{\"category\":\"electronics\"}"
   ) {
-    entity
-    facetsEnabled
-    totalFields
-    facetableFields
-    config
-    facets {
-      field
-      label
-      type
-      sortBy
-      limit
-      showCount
-      values {
-        value
-        count
-        selected
-      }
-      totalValues
-    }
-    totalRecords
+    success
+    master
+    operation
+    record
+    error
   }
 }
 ```
-
-### Filters Format
-
-Filters are passed as a JSON-encoded string. Supported operators:
-- Exact match: `{"field": "value"}`
-- Multiple values: `{"field": "value1,value2"}` (OR match)
-- All filters are AND-combined
 
 ### Response Caching
 
-API Mesh responses include cache headers:
-- `Cache-Control: public, max-age=60, s-maxage=120`
+| Operation | Cache |
+|-----------|-------|
+| Read queries (GET) | CDN cached: `max-age=60, s-maxage=900` (15 min edge cache) |
+| Mutations (POST/PUT/PATCH/DELETE) | `no-store` (never cached) |
+
+> For complete API documentation with all parameters, data formats, request/response examples, and error codes, see the [API Reference](API-REFERENCE.md) or the [Postman Documentation](https://documenter.getpostman.com/view/38215772/2sBXqKofA5).
+
+---
+
+## Documentation
+
+| Document | Description |
+|----------|-------------|
+| [README.md](README.md) | This file — overview, features, admin guide, getting started |
+| [TECHNICAL.md](TECHNICAL.md) | Architecture, tech stack, project structure, data flows, deployment, troubleshooting |
+| [API-REFERENCE.md](API-REFERENCE.md) | Complete API reference — all 12 GraphQL operations with parameters, examples, and error codes |
+| [Postman Collection](PIM-API.postman_collection.json) | Importable Postman collection with all API requests and example responses |
+| [API Documentation (Online)](https://documenter.getpostman.com/view/38215772/2sBXqKofA5) | Published Postman API documentation — interactive, shareable |
 
 ---
 

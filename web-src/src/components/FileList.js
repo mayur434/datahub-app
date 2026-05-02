@@ -7,14 +7,17 @@ import {
 import { useNavigate } from 'react-router-dom'
 import { fetchFileList, deleteFile, updateVisibility } from './actionInvoker'
 import { useNotifications } from './NotificationProvider'
+import useSwrCache, { clearSwrCache } from './useSwrCache'
 import Add from '@spectrum-icons/workflow/Add'
 import Refresh from '@spectrum-icons/workflow/Refresh'
 import Delete from '@spectrum-icons/workflow/Delete'
 import ViewDetail from '@spectrum-icons/workflow/ViewDetail'
 
 function FileList ({ runtime, ims }) {
-  const [files, setFiles] = useState([])
-  const [loading, setLoading] = useState(true)
+  const filesSwr = useSwrCache('file-list', () => fetchFileList(ims).then(r => r.files || []), { ttl: 2 * 60 * 1000 })
+  const initialFiles = Array.isArray(filesSwr.data) ? filesSwr.data : []
+  const [files, setFiles] = useState(initialFiles)
+  const [loading, setLoading] = useState(!filesSwr.data)
   const [error, setError] = useState(null)
   const [searchTerm, setSearchTerm] = useState('')
   const [filterVisibility, setFilterVisibility] = useState('all')
@@ -24,38 +27,38 @@ function FileList ({ runtime, ims }) {
   const navigate = useNavigate()
   const notify = useNotifications()
 
+  // Sync SWR data into local state
   useEffect(() => {
-    loadFiles()
-  }, [])
-
-  async function loadFiles () {
-    try {
-      setLoading(true)
-      const result = await fetchFileList(ims)
-      setFiles(result.files || [])
-      setError(null)
-    } catch (e) {
-      setError(e.message)
-    } finally {
+    if (filesSwr.data) {
+      setFiles(Array.isArray(filesSwr.data) ? filesSwr.data : [])
       setLoading(false)
     }
+    if (filesSwr.error && !filesSwr.data) setError(filesSwr.error)
+  }, [filesSwr.data, filesSwr.error])
+
+  async function loadFiles () {
+    await filesSwr.refresh()
+    clearSwrCache('dashboard') // invalidate dashboard cache too
   }
 
-  async function handleDelete (entity, displayName) {
+  async function handleDelete (master, displayName) {
     try {
-      await deleteFile(entity, ims)
-      notify.success(`Entity "${displayName}" deleted successfully`)
+      await deleteFile(master, ims)
+      notify.success(`Master "${displayName}" deleted successfully`)
+      clearSwrCache('dashboard')
+      clearSwrCache('admin-overview')
       await loadFiles()
     } catch (e) {
       notify.error(`Failed to delete: ${e.message}`)
     }
   }
 
-  async function handleToggleVisibility (entity, currentVisibility) {
+  async function handleToggleVisibility (master, currentVisibility) {
     try {
       const newVisibility = currentVisibility === 'public' ? 'private' : 'public'
-      await updateVisibility(entity, newVisibility, ims)
+      await updateVisibility(master, newVisibility, ims)
       notify.success(`Visibility updated to ${newVisibility}`)
+      clearSwrCache('dashboard')
       await loadFiles()
     } catch (e) {
       notify.error(`Failed to update visibility: ${e.message}`)
@@ -65,9 +68,9 @@ function FileList ({ runtime, ims }) {
   async function handleBulkDelete () {
     if (selectedItems.size === 0) return
     try {
-      const promises = Array.from(selectedItems).map(entity => deleteFile(entity, ims))
+      const promises = Array.from(selectedItems).map(master => deleteFile(master, ims))
       await Promise.all(promises)
-      notify.success(`${selectedItems.size} entities deleted`)
+      notify.success(`${selectedItems.size} masters deleted`)
       setSelectedItems(new Set())
       await loadFiles()
     } catch (e) {
@@ -75,11 +78,11 @@ function FileList ({ runtime, ims }) {
     }
   }
 
-  function toggleSelection (entityName) {
+  function toggleSelection (masterName) {
     setSelectedItems(prev => {
       const next = new Set(prev)
-      if (next.has(entityName)) next.delete(entityName)
-      else next.add(entityName)
+      if (next.has(masterName)) next.delete(masterName)
+      else next.add(masterName)
       return next
     })
   }
@@ -88,7 +91,7 @@ function FileList ({ runtime, ims }) {
     if (selectedItems.size === filteredFiles.length) {
       setSelectedItems(new Set())
     } else {
-      setSelectedItems(new Set(filteredFiles.map(f => f.entityName)))
+      setSelectedItems(new Set(filteredFiles.map(f => f.masterName || f.entityName)))
     }
   }
 
@@ -109,7 +112,7 @@ function FileList ({ runtime, ims }) {
       const term = searchTerm.toLowerCase()
       result = result.filter(f =>
         f.displayName?.toLowerCase().includes(term) ||
-        f.entityName?.toLowerCase().includes(term) ||
+        (f.masterName || f.entityName)?.toLowerCase().includes(term) ||
         f.description?.toLowerCase().includes(term)
       )
     }
@@ -138,7 +141,7 @@ function FileList ({ runtime, ims }) {
       <View UNSAFE_className='mdm-page'>
         <div className='mdm-loading-state'>
           <ProgressCircle aria-label='Loading...' isIndeterminate size='L' />
-          <Text marginTop='size-200'>Loading entities...</Text>
+          <Text marginTop='size-200'>Loading masters...</Text>
         </div>
       </View>
     )
@@ -149,9 +152,9 @@ function FileList ({ runtime, ims }) {
       {/* Page Header */}
       <Flex justifyContent='space-between' alignItems='center' marginBottom='size-300'>
         <View>
-          <Heading level={1} UNSAFE_className='mdm-page__title'>Entities</Heading>
+          <Heading level={1} UNSAFE_className='mdm-page__title'>Masters</Heading>
           <Text UNSAFE_className='mdm-page__subtitle'>
-            {files.length} registered {files.length === 1 ? 'entity' : 'entities'}
+            {files.length} registered {files.length === 1 ? 'master' : 'masters'}
           </Text>
         </View>
         <Flex gap='size-100'>
@@ -170,11 +173,11 @@ function FileList ({ runtime, ims }) {
       <View UNSAFE_className='mdm-toolbar' marginBottom='size-200'>
         <Flex gap='size-200' alignItems='end' wrap>
           <SearchField
-            label='Search entities'
+            label='Search masters'
             value={searchTerm}
             onChange={setSearchTerm}
             width='size-3000'
-            aria-label='Search entities'
+            aria-label='Search masters'
           />
           <Picker
             label='Visibility'
@@ -201,7 +204,7 @@ function FileList ({ runtime, ims }) {
                   primaryActionLabel='Delete All'
                   onPrimaryAction={handleBulkDelete}
                 >
-                  Are you sure you want to delete {selectedItems.size} entities? This action cannot be undone.
+                  Are you sure you want to delete {selectedItems.size} masters? This action cannot be undone.
                 </AlertDialog>
               </DialogTrigger>
             </Flex>
@@ -214,12 +217,12 @@ function FileList ({ runtime, ims }) {
         <div className='mdm-empty-state'>
           <div className='mdm-empty-state__icon'>📂</div>
           <Heading level={2}>
-            {searchTerm || filterVisibility !== 'all' ? 'No matching entities' : 'Get started'}
+            {searchTerm || filterVisibility !== 'all' ? 'No matching masters' : 'Get started'}
           </Heading>
           <Text>
             {searchTerm || filterVisibility !== 'all'
               ? 'Try adjusting your search or filter criteria.'
-              : 'Import a CSV file to create your first data entity and start managing your master data.'}
+              : 'Import a CSV file to create your first master and start managing your master data.'}
           </Text>
           {!searchTerm && filterVisibility === 'all' && (
             <Button variant='accent' marginTop='size-200' onPress={() => navigate('/upload')}>
@@ -243,7 +246,7 @@ function FileList ({ runtime, ims }) {
                     aria-label='Select all'
                   />
                 </th>
-                <SortableHeader field='displayName' label='Entity' currentSort={sortField} dir={sortDir} onSort={handleSort} />
+                <SortableHeader field='displayName' label='Master' currentSort={sortField} dir={sortDir} onSort={handleSort} />
                 <SortableHeader field='recordCount' label='Records' currentSort={sortField} dir={sortDir} onSort={handleSort} />
                 <th>Visibility</th>
                 <th>CRUD</th>
@@ -253,20 +256,20 @@ function FileList ({ runtime, ims }) {
             </thead>
             <tbody>
               {filteredFiles.map(file => (
-                <tr key={file.entityName} className={selectedItems.has(file.entityName) ? 'mdm-table__row--selected' : ''}>
+                <tr key={file.masterName || file.entityName} className={selectedItems.has(file.masterName || file.entityName) ? 'mdm-table__row--selected' : ''}>
                   <td className='mdm-table__check-col'>
                     <Checkbox
-                      isSelected={selectedItems.has(file.entityName)}
-                      onChange={() => toggleSelection(file.entityName)}
+                      isSelected={selectedItems.has(file.masterName || file.entityName)}
+                      onChange={() => toggleSelection(file.masterName || file.entityName)}
                       aria-label={`Select ${file.displayName}`}
                     />
                   </td>
                   <td>
                     <div className='mdm-entity-cell'>
-                      <button className='mdm-entity-cell__link' onClick={() => navigate(`/files/${file.entityName}`)}>
+                      <button className='mdm-entity-cell__link' onClick={() => navigate(`/masters/${file.masterName || file.entityName}`)}>
                         {file.displayName}
                       </button>
-                      <span className='mdm-entity-cell__sub'>{file.entityName}</span>
+                      <span className='mdm-entity-cell__sub'>{file.masterName || file.entityName}</span>
                     </div>
                   </td>
                   <td>
@@ -286,18 +289,23 @@ function FileList ({ runtime, ims }) {
                     <Text UNSAFE_className='mdm-text-muted'>
                       {file.updatedAt ? new Date(file.updatedAt).toLocaleDateString() : '-'}
                     </Text>
+                    {file.lastModifiedBy && (
+                      <Text UNSAFE_style={{ fontSize: '11px', color: 'var(--spectrum-global-color-gray-500)', display: 'block' }}>
+                        by {file.lastModifiedBy}
+                      </Text>
+                    )}
                   </td>
                   <td className='mdm-table__actions-col'>
                     <ActionMenu
                       onAction={(key) => {
                         switch (key) {
-                          case 'view': navigate(`/files/${file.entityName}`); break
-                          case 'records': navigate(`/files/${file.entityName}/records`); break
-                          case 'schema': navigate(`/files/${file.entityName}/schema`); break
-                          case 'versions': navigate(`/files/${file.entityName}/versions`); break
-                          case 'archives': navigate(`/files/${file.entityName}/archives`); break
-                          case 'visibility': handleToggleVisibility(file.entityName, file.visibility); break
-                          case 'delete': handleDelete(file.entityName, file.displayName); break
+                          case 'view': navigate(`/masters/${file.masterName || file.entityName}`); break
+                          case 'records': navigate(`/masters/${file.masterName || file.entityName}/records`); break
+                          case 'schema': navigate(`/masters/${file.masterName || file.entityName}/schema`); break
+                          case 'versions': navigate(`/masters/${file.masterName || file.entityName}/versions`); break
+                          case 'archives': navigate(`/masters/${file.masterName || file.entityName}/archives`); break
+                          case 'visibility': handleToggleVisibility(file.masterName || file.entityName, file.visibility); break
+                          case 'delete': handleDelete(file.masterName || file.entityName, file.displayName); break
                         }
                       }}
                     >
@@ -307,7 +315,7 @@ function FileList ({ runtime, ims }) {
                       <Item key='versions'>Version History</Item>
                       <Item key='archives'>Archives &amp; Backups</Item>
                       <Item key='visibility'>{file.visibility === 'public' ? 'Make Private' : 'Make Public'}</Item>
-                      <Item key='delete'>Delete Entity</Item>
+                      <Item key='delete'>Delete Master</Item>
                     </ActionMenu>
                   </td>
                 </tr>

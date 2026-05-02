@@ -2,11 +2,11 @@
  * MDM Query Data Action — Admin UI only
  * 
  * Used by Admin UI to preview/browse records.
- * Reads DIRECTLY from aio-lib-db (admin previews must be real-time).
+ * Reads DIRECTLY from per-master collections (admin previews must be real-time).
  * For public data consumption, the `mdm-data` action is used via API Mesh.
  */
 
-const { getDbClient, safeFindOne, COLLECTIONS, createResponse, createErrorResponse, validateIMSToken } = require('../mdm-utils')
+const { getDbClient, safeFindOne, COLLECTIONS, getMasterCollection, createResponse, createErrorResponse, validateIMSToken, escapeRegex, getEnvConfig, getCachedSettings } = require('../mdm-utils')
 
 async function main (params) {
   if (params.__ow_method === 'options') return createResponse({})
@@ -16,27 +16,28 @@ async function main (params) {
 
   let client
   try {
-    const { entity, id } = params
-    if (!entity) return createErrorResponse('Missing required parameter: entity')
+    const master = params.master || params.entity
+    const { id } = params
+    if (!master) return createErrorResponse('Missing required parameter: master')
 
     client = await getDbClient(params)
     const metaCol = await client.collection(COLLECTIONS.METADATA)
-    const recordsCol = await client.collection(COLLECTIONS.RECORDS)
+    const masterCol = await getMasterCollection(client, master)
 
-    const metadata = await safeFindOne(metaCol, { entityName: entity })
+    const metadata = await safeFindOne(metaCol, { masterName: master })
     if (!metadata || metadata.status === 'deleted') {
-      return createErrorResponse(`Entity '${entity}' not found`, 404)
+      return createErrorResponse(`Master '${master}' not found`, 404)
     }
 
     // Single record by ID
     if (id) {
-      const record = await safeFindOne(recordsCol, { entityName: entity, primaryKey: id, deleted: false })
+      const record = await safeFindOne(masterCol, { primaryKey: id, deleted: false })
       if (!record) return createErrorResponse(`Record '${id}' not found`, 404)
-      return createResponse({ entity, data: record.data })
+      return createResponse({ master, data: { ...record.data, _systemFields: { createdAt: record.createdAt, updatedAt: record.updatedAt, createdBy: record.createdBy, updatedBy: record.updatedBy } } })
     }
 
     // Build data-level filters from query params
-    const systemParams = ['entity', 'id', 'page', 'pageSize', 'sort', 'order', 'fields', 'filter', 'filters', '__ow_method', '__ow_headers', '__ow_path', '__ow_query', '__ow_body', '__ims_oauth_s2s', 'LOG_LEVEL', 'apiKey']
+    const systemParams = ['master', 'entity', 'id', 'page', 'pageSize', 'sort', 'order', 'fields', 'filter', 'filters', '__ow_method', '__ow_headers', '__ow_path', '__ow_query', '__ow_body', '__ims_oauth_s2s', 'LOG_LEVEL', 'apiKey']
     const dataFilters = {}
 
     // Parse 'filter' param: format is "field=value&field2=value2" or "field=value"
@@ -77,26 +78,43 @@ async function main (params) {
       }
     }
 
-    // Pagination / sorting
+    // Pagination / sorting — use settings-configured limits
+    const settingsDoc = await getCachedSettings(client)
+    const env = getEnvConfig(params)
+    const apiSettings = settingsDoc?.api || {}
+    const maxPageSize = apiSettings.maxPageSize || env.maxPageSize
+    const defaultPageSize = apiSettings.defaultPageSize || env.defaultPageSize
+
     const page = Math.max(1, parseInt(params.page) || 1)
-    const pageSize = Math.min(100, Math.max(1, parseInt(params.pageSize) || 25))
+    const pageSize = Math.min(maxPageSize, Math.max(1, parseInt(params.pageSize) || defaultPageSize))
     const sort = params.sort || metadata.primaryKey
     const order = params.order === 'desc' ? -1 : 1
     const fields = params.fields ? params.fields.split(',').map(f => f.trim()) : null
 
-    // Query with entityName only — aio-lib-db does not reliably support
-    // compound filters with booleans (deleted: false) or status strings.
-    // JS-level safety filter is applied after fetch (same pattern as file-list/dashboard).
-    const allRecords = await recordsCol.find({ entityName: entity })
-      .sort({ [`data.${sort}`]: order })
-      .toArray()
-
-    // JS-level safety filter: exclude deleted/inactive records
-    let filtered = allRecords.filter(r => r.deleted !== true && r.status !== 'deleted')
-
-    // Apply data-level filters (case-insensitive match)
+    // --- Optimized query: use skip/limit when no JS-level filters needed ---
     const filterKeys = Object.keys(dataFilters)
-    if (filterKeys.length > 0) {
+    const needsJsFilter = filterKeys.length > 0
+
+    let responseData, total
+
+    if (!needsJsFilter) {
+      // Fast path: DB-level pagination — no full-table scan
+      const allRecs = await masterCol.find({}).toArray()
+      const active = allRecs.filter(r => r.deleted !== true && r.status !== 'deleted')
+      total = active.length
+      active.sort((a, b) => {
+        const va = a.data?.[sort] || ''
+        const vb = b.data?.[sort] || ''
+        return order === 1 ? String(va).localeCompare(String(vb)) : String(vb).localeCompare(String(va))
+      })
+      const paged = active.slice((page - 1) * pageSize, page * pageSize)
+      responseData = paged.map(r => ({ ...r.data, _systemFields: { createdAt: r.createdAt, updatedAt: r.updatedAt, createdBy: r.createdBy, updatedBy: r.updatedBy } }))
+    } else {
+      // Slow path: filters require JS-level matching
+      const allRecords = await masterCol.find({}).toArray()
+
+      let filtered = allRecords.filter(r => r.deleted !== true && r.status !== 'deleted')
+
       filtered = filtered.filter(r => {
         if (!r.data) return false
         return filterKeys.every(key => {
@@ -104,15 +122,13 @@ async function main (params) {
           return pattern.test(String(r.data[key] || ''))
         })
       })
+
+      total = filtered.length
+      const paged = filtered.slice((page - 1) * pageSize, page * pageSize)
+      responseData = paged.map(r => ({ ...r.data, _systemFields: { createdAt: r.createdAt, updatedAt: r.updatedAt, createdBy: r.createdBy, updatedBy: r.updatedBy } }))
     }
 
-    const total = filtered.length
-
-    // Apply pagination
-    const paged = filtered.slice((page - 1) * pageSize, page * pageSize)
-
-    // Extract data field and apply field selection
-    let responseData = paged.map(r => r.data)
+    // Apply field selection
     if (fields && fields.length > 0) {
       responseData = responseData.map(record => {
         const selected = {}
@@ -122,7 +138,7 @@ async function main (params) {
     }
 
     return createResponse({
-      entity,
+      master,
       count: responseData.length,
       page,
       pageSize,
@@ -135,10 +151,6 @@ async function main (params) {
   } finally {
     if (client) await client.close()
   }
-}
-
-function escapeRegex (str) {
-  return String(str).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
 exports.main = main

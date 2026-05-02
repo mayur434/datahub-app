@@ -1,7 +1,7 @@
 {
   "type": "object",
   "properties": {
-    "entity": { "type": "string" },
+    "master": { "type": "string" },
     "count": { "type": "integer" },
     "page": { "type": "integer" },
     "pageSize": { "type": "integer" },
@@ -35,5 +35,5 @@
       }
     }
   },
-  "required": ["entity", "count", "page", "pageSize", "total", "data"]
+  "required": ["master", "count", "page", "pageSize", "total", "data"]
 }

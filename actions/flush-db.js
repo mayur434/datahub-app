@@ -14,7 +14,8 @@ if (!process.env.__OW_NAMESPACE && process.env.AIO_runtime_namespace) {
   process.env.__OW_NAMESPACE = process.env.AIO_runtime_namespace
 }
 
-const COLLECTIONS = ['metadata', 'records', 'versions', 'audit', 'settings', 'archives']
+const SYSTEM_COLLECTIONS = ['metadata', 'versions', 'audit', 'settings', 'archives', 'roles', 'partners']
+const MDM_COLLECTION_PREFIX = 'mdm_'
 
 async function run () {
   let client
@@ -35,7 +36,47 @@ async function run () {
     client = await db.connect()
 
     let totalDeleted = 0
-    for (const name of COLLECTIONS) {
+
+    // --- Phase 1: Discover per-master collections from metadata ---
+    const masterCollections = []
+    try {
+      const metaCol = await client.collection('metadata')
+      const allMeta = await metaCol.find({}).toArray()
+      for (const m of allMeta) {
+        const name = m.masterName || m.entityName
+        if (name) {
+          masterCollections.push(`${MDM_COLLECTION_PREFIX}${name}`)
+        }
+      }
+      if (masterCollections.length > 0) {
+        console.log(`Found ${masterCollections.length} per-master collection(s): ${masterCollections.join(', ')}`)
+      }
+    } catch (e) {
+      console.log('  (no metadata collection or empty — skipping master discovery)')
+    }
+
+    // --- Phase 2: Flush per-master data collections first ---
+    for (const colName of masterCollections) {
+      try {
+        const col = await client.collection(colName)
+        const docs = await col.find({}).toArray()
+        if (docs.length > 0) {
+          for (const doc of docs) {
+            await col.deleteOne({ _id: doc._id })
+          }
+          console.log(`  ✓ ${colName}: deleted ${docs.length} documents`)
+          totalDeleted += docs.length
+        } else {
+          console.log(`  - ${colName}: empty`)
+        }
+      } catch (e) {
+        // Collection may not exist yet — that's fine
+        console.log(`  - ${colName}: ${e.message}`)
+      }
+    }
+
+    // --- Phase 3: Flush system collections ---
+    for (const name of SYSTEM_COLLECTIONS) {
       try {
         const col = await client.collection(name)
         const docs = await col.find({}).toArray()
@@ -51,6 +92,21 @@ async function run () {
       } catch (e) {
         console.error(`  ✗ ${name}: ${e.message}`)
       }
+    }
+
+    // --- Phase 4: Flush legacy 'records' collection if it still exists ---
+    try {
+      const legacyCol = await client.collection('records')
+      const legacyDocs = await legacyCol.find({}).toArray()
+      if (legacyDocs.length > 0) {
+        for (const doc of legacyDocs) {
+          await legacyCol.deleteOne({ _id: doc._id })
+        }
+        console.log(`  ✓ records (legacy): deleted ${legacyDocs.length} documents`)
+        totalDeleted += legacyDocs.length
+      }
+    } catch (e) {
+      // No legacy collection — expected after migration
     }
 
     console.log(`\nDone. ${totalDeleted} total documents deleted.`)

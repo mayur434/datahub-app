@@ -4,7 +4,7 @@
  * Supports GET (read config) and POST (update config).
  */
 
-const { getDbClient, safeFindOne, COLLECTIONS, createAuditLog, createResponse, createErrorResponse, validateIMSToken, getUserFromParams } = require('../mdm-utils')
+const { getDbClient, safeFindOne, COLLECTIONS, createAuditLog, createResponse, createErrorResponse, validateIMSToken, getUserFromParams, getEnvConfig, getCachedSettings, getTimezoneDate } = require('../mdm-utils')
 
 async function main (params) {
   if (params.__ow_method === 'options') return createResponse({})
@@ -12,19 +12,18 @@ async function main (params) {
   const auth = validateIMSToken(params)
   if (!auth.valid) return createErrorResponse(auth.error, 401)
 
-  const user = getUserFromParams(params)
-
   let client
   try {
-    const { entity } = params
-    if (!entity) return createErrorResponse('Missing required parameter: entity')
+    const entity = params.master || params.entity
+    if (!entity) return createErrorResponse('Missing required parameter: master')
 
     client = await getDbClient(params)
+    const user = await getUserFromParams(params, client)
     const metaCol = await client.collection(COLLECTIONS.METADATA)
 
-    const metadata = await safeFindOne(metaCol, { entityName: entity })
+    const metadata = await safeFindOne(metaCol, { masterName: entity })
     if (!metadata || metadata.status === 'deleted') {
-      return createErrorResponse(`Entity '${entity}' not found`, 404)
+      return createErrorResponse(`Master '${entity}' not found`, 404)
     }
 
     const method = (params.__ow_method || 'get').toLowerCase()
@@ -34,7 +33,7 @@ async function main (params) {
       const settingsCol = await client.collection(COLLECTIONS.SETTINGS)
       let globalSettings = null
       try {
-        globalSettings = await safeFindOne(settingsCol, { settingsId: 'app-settings' })
+        globalSettings = await getCachedSettings(client)
       } catch (e) { /* use defaults */ }
 
       const globalArchival = (globalSettings && globalSettings.archival) || {
@@ -49,7 +48,7 @@ async function main (params) {
       const entityConfig = metadata.archival || {}
 
       return createResponse({
-        entity,
+        master: entity,
         displayName: metadata.displayName,
         recordCount: metadata.recordCount || 0,
         globalDefaults: globalArchival,
@@ -67,7 +66,7 @@ async function main (params) {
       })
     }
 
-    // POST: Update archival config for this entity
+    // POST: Update archival config for this master
     const { archival } = params
     if (!archival) return createErrorResponse('Missing archival configuration object')
 
@@ -96,11 +95,12 @@ async function main (params) {
     }
 
     // Merge with existing config (preserve system fields like lastArchiveAt, totalArchived)
+    const env = getEnvConfig(params)
     const existingArchival = metadata.archival || {}
     const updatedArchival = {
       enabled: archival.enabled !== undefined ? archival.enabled : existingArchival.enabled,
       threshold: archival.threshold || existingArchival.threshold || 50000,
-      retentionDays: archival.retentionDays || existingArchival.retentionDays || 90,
+      retentionDays: archival.retentionDays || existingArchival.retentionDays || env.auditRetentionDays,
       keepLatest: archival.keepLatest || existingArchival.keepLatest || 10000,
       archiveFormat: archival.archiveFormat || existingArchival.archiveFormat || 'csv',
       notifyEmail: archival.notifyEmail !== undefined ? archival.notifyEmail : (existingArchival.notifyEmail || ''),
@@ -109,12 +109,12 @@ async function main (params) {
     }
 
     await metaCol.updateOne(
-      { entityName: entity },
-      { $set: { archival: updatedArchival, updatedAt: new Date().toISOString() } }
+      { masterName: entity },
+      { $set: { archival: updatedArchival, updatedAt: getTimezoneDate(params) } }
     )
 
     await createAuditLog(client, {
-      entityName: entity,
+      masterName: entity,
       operation: 'archive-config-update',
       actor: user,
       status: 'success'
@@ -122,7 +122,7 @@ async function main (params) {
 
     return createResponse({
       status: 'success',
-      entity,
+      master: entity,
       archival: updatedArchival,
       message: 'Archival configuration updated successfully'
     })

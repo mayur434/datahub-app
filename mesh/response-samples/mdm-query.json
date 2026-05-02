@@ -1,5 +1,5 @@
 {
-  "entity": "product",
+  "master": "product",
   "count": 2,
   "page": 1,
   "pageSize": 25,

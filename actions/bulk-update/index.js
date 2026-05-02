@@ -2,9 +2,10 @@
  * MDM Bulk Update Action
  * Handles bulk row operations from CSV or JSON payload.
  * Supports: upsert, replace, patch, delete modes + dry-run preview.
+ * Operates on per-master collections.
  */
 
-const { getDbClient, safeFindOne, COLLECTIONS, parseCSV, createVersion, createAuditLog, createResponse, createErrorResponse, validateIMSToken, getUserFromParams } = require('../mdm-utils')
+const { getDbClient, safeFindOne, COLLECTIONS, getMasterCollection, parseCSV, createVersion, createAuditLog, createResponse, createErrorResponse, validateIMSToken, getUserFromParams, checkPermission, checkStorageGuardrails, getEnvConfig, getCachedSettings, injectRecordAuditFields, getTimezoneDate } = require('../mdm-utils')
 
 async function main (params) {
   if (params.__ow_method === 'options') return createResponse({})
@@ -12,24 +13,31 @@ async function main (params) {
   const auth = validateIMSToken(params)
   if (!auth.valid) return createErrorResponse(auth.error, 401)
 
-  const user = getUserFromParams(params)
-
   let client
   try {
-    const { entity, records, csvContent, operationType, dryRun } = params
-    if (!entity) return createErrorResponse('Missing required parameter: entity')
+    const master = params.master || params.entity
+    const { records, csvContent, operationType, dryRun } = params
+    if (!master) return createErrorResponse('Missing required parameter: master')
 
     client = await getDbClient(params)
-    const metaCol = await client.collection(COLLECTIONS.METADATA)
-    const recordsCol = await client.collection(COLLECTIONS.RECORDS)
+    const user = await getUserFromParams(params, client)
 
-    const metadata = await safeFindOne(metaCol, { entityName: entity })
+    // RBAC check
+    const perm = await checkPermission(client, user, 'bulk-update', master)
+    if (!perm.allowed) {
+      return createErrorResponse(`Permission denied: role '${perm.role}' cannot perform 'bulk-update' on '${master}'`, 403)
+    }
+
+    const metaCol = await client.collection(COLLECTIONS.METADATA)
+    const masterCol = await getMasterCollection(client, master)
+
+    const metadata = await safeFindOne(metaCol, { masterName: master })
     if (!metadata || metadata.status === 'deleted') {
-      return createErrorResponse(`Entity '${entity}' not found`, 404)
+      return createErrorResponse(`Master '${master}' not found`, 404)
     }
 
     if (!metadata.allowedOperations.bulkUpdate) {
-      return createErrorResponse('Bulk update operation not allowed for this entity', 403)
+      return createErrorResponse('Bulk update operation not allowed for this master', 403)
     }
 
     // Parse records from CSV or use provided array
@@ -45,13 +53,34 @@ async function main (params) {
 
     const opType = operationType || 'upsert'
 
+    // Storage guardrail check (worst-case: all inserts)
+    if (opType !== 'delete') {
+      const guardrail = await checkStorageGuardrails(client, {
+        newDocumentCount: bulkRecords.length + 1,
+        entity: master,
+        currentEntityRecords: metadata.recordCount || 0,
+        params
+      })
+      if (!guardrail.allowed) {
+        return createErrorResponse(`Storage guardrail: ${guardrail.reason}`, 507)
+      }
+    }
+
+    // Batch-fetch all existing records upfront to avoid N+1 queries
+    const pks = bulkRecords.map(r => r[metadata.primaryKey]).filter(Boolean)
+    const existingRecords = pks.length > 0
+      ? await masterCol.find({}).toArray()
+        .then(all => all.filter(r => r.deleted !== true && pks.includes(r.primaryKey)))
+      : []
+    const existingMap = new Map(existingRecords.map(r => [r.primaryKey, r]))
+
     // Dry run — validate and return preview
     if (dryRun) {
       const preview = { toInsert: 0, toUpdate: 0, toDelete: 0, errors: [] }
       for (const record of bulkRecords) {
         const pk = record[metadata.primaryKey]
         if (!pk) { preview.errors.push('Missing primary key for record'); continue }
-        const exists = await safeFindOne(recordsCol, { entityName: entity, primaryKey: pk, deleted: false })
+        const exists = existingMap.has(pk)
         if (opType === 'delete') {
           preview.toDelete += exists ? 1 : 0
         } else if (opType === 'upsert') {
@@ -60,12 +89,13 @@ async function main (params) {
           exists ? preview.toUpdate++ : preview.errors.push(`Record '${pk}' not found`)
         }
       }
-      return createResponse({ entity, dryRun: true, preview, status: 'preview' })
+      return createResponse({ master, dryRun: true, preview, status: 'preview' })
     }
 
     // Execute bulk operations
     let inserted = 0, updated = 0, deleted = 0, failed = 0
     const errors = []
+    const auditConfig = metadata.recordAudit
 
     // Use bulkWrite for performance
     const ops = []
@@ -75,37 +105,43 @@ async function main (params) {
       if (!pk) { errors.push(`Record ${i + 1}: Missing primary key`); failed++; continue }
 
       try {
-        const existing = await safeFindOne(recordsCol, { entityName: entity, primaryKey: pk, deleted: false })
+        const existing = existingMap.get(pk) || null
         const exists = !!existing
 
         switch (opType) {
           case 'upsert':
             if (exists) {
-              ops.push({ updateOne: { filter: { entityName: entity, primaryKey: pk }, update: { $set: { data: { ...existing.data, ...record }, updatedAt: new Date().toISOString(), updatedBy: user } } } })
+              const mergedData = { ...existing.data, ...record }
+              if (auditConfig) injectRecordAuditFields(mergedData, auditConfig, user, params, false)
+              ops.push({ updateOne: { filter: { primaryKey: pk }, update: { $set: { data: mergedData, updatedAt: getTimezoneDate(params), updatedBy: user } } } })
               updated++
             } else {
-              ops.push({ insertOne: { document: { entityName: entity, primaryKey: pk, versionId: metadata.activeVersionId, data: record, status: 'active', deleted: false, createdAt: new Date().toISOString(), createdBy: user, updatedAt: new Date().toISOString(), updatedBy: user } } })
+              if (auditConfig) injectRecordAuditFields(record, auditConfig, user, params, true)
+              ops.push({ insertOne: { document: { primaryKey: pk, versionId: metadata.activeVersionId, data: record, status: 'active', deleted: false, createdAt: getTimezoneDate(params), createdBy: user, updatedAt: getTimezoneDate(params), updatedBy: user } } })
               inserted++
             }
             break
           case 'replace':
             if (!exists) { errors.push(`Record ${i + 1}: '${pk}' not found`); failed++ }
             else {
-              ops.push({ updateOne: { filter: { entityName: entity, primaryKey: pk }, update: { $set: { data: record, updatedAt: new Date().toISOString(), updatedBy: user } } } })
+              if (auditConfig) injectRecordAuditFields(record, auditConfig, user, params, false)
+              ops.push({ updateOne: { filter: { primaryKey: pk }, update: { $set: { data: record, updatedAt: getTimezoneDate(params), updatedBy: user } } } })
               updated++
             }
             break
           case 'patch':
             if (!exists) { errors.push(`Record ${i + 1}: '${pk}' not found`); failed++ }
             else {
-              ops.push({ updateOne: { filter: { entityName: entity, primaryKey: pk }, update: { $set: { data: { ...existing.data, ...record }, updatedAt: new Date().toISOString(), updatedBy: user } } } })
+              const patchedData = { ...existing.data, ...record }
+              if (auditConfig) injectRecordAuditFields(patchedData, auditConfig, user, params, false)
+              ops.push({ updateOne: { filter: { primaryKey: pk }, update: { $set: { data: patchedData, updatedAt: getTimezoneDate(params), updatedBy: user } } } })
               updated++
             }
             break
           case 'delete':
             if (!exists) { errors.push(`Record ${i + 1}: '${pk}' not found`); failed++ }
             else {
-              ops.push({ updateOne: { filter: { entityName: entity, primaryKey: pk }, update: { $set: { deleted: true, status: 'deleted', updatedAt: new Date().toISOString(), updatedBy: user } } } })
+              ops.push({ updateOne: { filter: { primaryKey: pk }, update: { $set: { deleted: true, status: 'deleted', updatedAt: getTimezoneDate(params), updatedBy: user } } } })
               deleted++
             }
             break
@@ -115,22 +151,29 @@ async function main (params) {
       }
     }
 
-    // Execute bulk write
+    // Execute bulk write in batches
     if (ops.length > 0) {
-      await recordsCol.bulkWrite(ops)
+      const settingsDoc = await getCachedSettings(client)
+      const env = getEnvConfig(params)
+      const batchSize = settingsDoc?.performance?.bulkBatchSize || env.bulkBatchSize
+
+      for (let b = 0; b < ops.length; b += batchSize) {
+        await masterCol.bulkWrite(ops.slice(b, b + batchSize))
+      }
     }
 
     // Update count + version
-    const count = await recordsCol.countDocuments({ entityName: entity, deleted: false })
-    const version = await createVersion(client, entity, 'bulk-update', user, { inserted, updated, deleted }, count)
+    const allRecs = await masterCol.find({}).toArray()
+    const count = allRecs.filter(r => r.deleted !== true).length
+    const version = await createVersion(client, master, 'bulk-update', user, { inserted, updated, deleted }, count)
 
     await metaCol.updateOne(
-      { entityName: entity },
-      { $set: { activeVersionId: version.versionId, recordCount: count, updatedAt: new Date().toISOString() } }
+      { masterName: master },
+      { $set: { activeVersionId: version.versionId, recordCount: count, updatedAt: getTimezoneDate(params), lastModifiedBy: user } }
     )
 
     await createAuditLog(client, {
-      entityName: entity,
+      masterName: master,
       operation: 'bulk-update',
       actor: user,
       status: failed === 0 ? 'success' : 'partial',
@@ -140,7 +183,7 @@ async function main (params) {
     })
 
     return createResponse({
-      entity,
+      master,
       operation: 'bulk-update',
       operationType: opType,
       versionId: version.versionId,

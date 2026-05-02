@@ -1,9 +1,9 @@
 /**
  * MDM Metadata Update Action
- * Update entity metadata (display name, description, allowed operations, etc.)
+ * Update master metadata (display name, description, allowed operations, etc.)
  */
 
-const { getDbClient, safeFindOne, COLLECTIONS, createAuditLog, createResponse, createErrorResponse, validateIMSToken, getUserFromParams } = require('../mdm-utils')
+const { getDbClient, safeFindOne, COLLECTIONS, createAuditLog, createResponse, createErrorResponse, validateIMSToken, getUserFromParams, getTimezoneDate } = require('../mdm-utils')
 
 async function main (params) {
   if (params.__ow_method === 'options') return createResponse({})
@@ -11,33 +11,33 @@ async function main (params) {
   const auth = validateIMSToken(params)
   if (!auth.valid) return createErrorResponse(auth.error, 401)
 
-  const user = getUserFromParams(params)
-
   let client
   try {
-    const { entity, displayName, description, crudEnabled, allowedOperations, governance } = params
-    if (!entity) return createErrorResponse('Missing required parameter: entity')
+    const master = params.master || params.entity
+    const { displayName, description, crudEnabled, allowedOperations, governance } = params
+    if (!master) return createErrorResponse('Missing required parameter: master')
 
     client = await getDbClient(params)
+    const user = await getUserFromParams(params, client)
     const metaCol = await client.collection(COLLECTIONS.METADATA)
 
-    const metadata = await safeFindOne(metaCol, { entityName: entity })
+    const metadata = await safeFindOne(metaCol, { masterName: master })
     if (!metadata || metadata.status === 'deleted') {
-      return createErrorResponse(`Entity '${entity}' not found`, 404)
+      return createErrorResponse(`Master '${master}' not found`, 404)
     }
 
     // Build update object
-    const updateFields = { updatedAt: new Date().toISOString() }
+    const updateFields = { updatedAt: getTimezoneDate(params), lastModifiedBy: user }
     if (displayName !== undefined) updateFields.displayName = displayName
     if (description !== undefined) updateFields.description = description
     if (crudEnabled !== undefined) updateFields.crudEnabled = !!crudEnabled
     if (allowedOperations !== undefined) updateFields.allowedOperations = { ...metadata.allowedOperations, ...allowedOperations }
     if (governance !== undefined) updateFields.governance = { ...metadata.governance, ...governance }
 
-    await metaCol.updateOne({ entityName: entity }, { $set: updateFields })
+    await metaCol.updateOne({ masterName: master }, { $set: updateFields })
 
     await createAuditLog(client, {
-      entityName: entity,
+      masterName: master,
       operation: 'metadata-update',
       actor: user,
       status: 'success',
@@ -45,11 +45,11 @@ async function main (params) {
     })
 
     // Fetch updated doc
-    const updated = await safeFindOne(metaCol, { entityName: entity })
+    const updated = await safeFindOne(metaCol, { masterName: master })
 
     return createResponse({
       status: 'success',
-      entity,
+      master,
       file: updated,
       message: 'Metadata updated successfully'
     })

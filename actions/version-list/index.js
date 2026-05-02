@@ -1,9 +1,9 @@
 /**
  * MDM Version List Action
- * Lists all versions for an entity from the versions collection.
+ * Lists all versions for a master from the versions collection.
  */
 
-const { getDbClient, safeFindOne, COLLECTIONS, createResponse, createErrorResponse, validateIMSToken } = require('../mdm-utils')
+const { getDbClient, safeFindOne, COLLECTIONS, createResponse, createErrorResponse, validateIMSToken, getEnvConfig, getCachedSettings } = require('../mdm-utils')
 
 async function main (params) {
   if (params.__ow_method === 'options') return createResponse({})
@@ -13,27 +13,42 @@ async function main (params) {
 
   let client
   try {
-    const { entity } = params
-    if (!entity) return createErrorResponse('Missing required parameter: entity')
+    const master = params.master || params.entity
+    if (!master) return createErrorResponse('Missing required parameter: master')
 
     client = await getDbClient(params)
     const metaCol = await client.collection(COLLECTIONS.METADATA)
     const versionCol = await client.collection(COLLECTIONS.VERSIONS)
 
-    const metadata = await safeFindOne(metaCol, { entityName: entity })
+    const metadata = await safeFindOne(metaCol, { masterName: master })
     if (!metadata || metadata.status === 'deleted') {
-      return createErrorResponse(`Entity '${entity}' not found`, 404)
+      return createErrorResponse(`Master '${master}' not found`, 404)
     }
 
-    const versions = await versionCol.find({ entityName: entity })
+    // Load settings for pagination
+    const settingsDoc = await getCachedSettings(client)
+    const env = getEnvConfig(params)
+    const apiSettings = settingsDoc?.api || {}
+    const maxPageSize = apiSettings.maxPageSize || env.maxPageSize
+    const defaultPageSize = apiSettings.defaultPageSize || env.defaultPageSize
+
+    const page = Math.max(1, parseInt(params.page) || 1)
+    const pageSize = Math.min(maxPageSize, Math.max(1, parseInt(params.pageSize) || defaultPageSize))
+
+    const total = await versionCol.countDocuments({ masterName: master })
+    const versions = await versionCol.find({ masterName: master })
       .sort({ createdAt: -1 })
+      .skip((page - 1) * pageSize)
+      .limit(pageSize)
       .toArray()
 
     return createResponse({
-      entity,
+      master,
       activeVersionId: metadata.activeVersionId,
       versions,
-      total: versions.length
+      total,
+      page,
+      pageSize
     })
   } catch (error) {
     console.error('Version list error:', error)

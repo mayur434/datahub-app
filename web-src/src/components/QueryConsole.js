@@ -4,19 +4,19 @@ import {
   Picker, Item, Divider
 } from '@adobe/react-spectrum'
 import { useNavigate } from 'react-router-dom'
-import { fetchFileList, queryData } from './actionInvoker'
+import { fetchFileList, queryData, invokeAction } from './actionInvoker'
 import { useNotifications } from './NotificationProvider'
 import Code from '@spectrum-icons/workflow/Code'
 
 function QueryConsole ({ runtime, ims }) {
   const navigate = useNavigate()
   const notify = useNotifications()
-  const [entities, setEntities] = useState([])
+  const [masters, setMasters] = useState([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
 
   // Query params
-  const [selectedEntity, setSelectedEntity] = useState('')
+  const [selectedMaster, setSelectedMaster] = useState('')
   const [filterStr, setFilterStr] = useState('')
   const [sortField, setSortField] = useState('')
   const [sortOrder, setSortOrder] = useState('asc')
@@ -29,20 +29,28 @@ function QueryConsole ({ runtime, ims }) {
   const [result, setResult] = useState(null)
 
   useEffect(() => {
-    loadEntities()
+    loadMasters()
+    // Load default page size from settings
+    ;(async () => {
+      try {
+        const r = await invokeAction('app-settings', {}, ims, 'GET')
+        const defaultPs = r?.settings?.api?.defaultPageSize
+        if (defaultPs) setPageSize(defaultPs)
+      } catch (_) { /* keep default */ }
+    })()
   }, [])
 
-  async function loadEntities () {
+  async function loadMasters () {
     try {
       const res = await fetchFileList(ims)
-      setEntities(res.files || [])
+      setMasters(res.files || [])
     } catch (e) {
-      console.error('Failed to load entities', e)
+      console.error('Failed to load masters', e)
     }
   }
 
   async function handleQuery () {
-    if (!selectedEntity) return
+    if (!selectedMaster) return
     try {
       setLoading(true)
       setError(null)
@@ -55,7 +63,7 @@ function QueryConsole ({ runtime, ims }) {
       if (page) queryParams.page = page
       if (pageSize) queryParams.pageSize = pageSize
 
-      const res = await queryData(selectedEntity, queryParams, ims)
+      const res = await queryData(selectedMaster, queryParams, ims)
       setResult(res)
       notify.success(`Query returned ${res.count || 0} records`)
     } catch (e) {
@@ -85,9 +93,9 @@ function QueryConsole ({ runtime, ims }) {
       <View UNSAFE_className='mdm-card' marginBottom='size-300'>
         <Heading level={3} marginBottom='size-200'>Query Builder</Heading>
         <div className='mdm-form-grid'>
-          <Picker label='Entity' selectedKey={selectedEntity} onSelectionChange={setSelectedEntity} isRequired width='100%'
-            placeholder='Select an entity...'>
-            {entities.map(e => <Item key={e.entityName}>{e.displayName || e.entityName}</Item>)}
+          <Picker label='Master' selectedKey={selectedMaster} onSelectionChange={setSelectedMaster} isRequired width='100%'
+            placeholder='Select a master...'>
+            {masters.map(e => <Item key={e.masterName || e.entityName}>{e.displayName || e.masterName || e.entityName}</Item>)}
           </Picker>
 
           <TextField label='Record ID (single)' value={recordId} onChange={setRecordId}
@@ -118,7 +126,7 @@ function QueryConsole ({ runtime, ims }) {
         </div>
 
         <Flex marginTop='size-300' gap='size-100'>
-          <Button variant='cta' onPress={handleQuery} isDisabled={!selectedEntity || loading}>
+          <Button variant='cta' onPress={handleQuery} isDisabled={!selectedMaster || loading}>
             <Code size='S' /><Text>{loading ? 'Running...' : 'Execute Query'}</Text>
           </Button>
           {result && (
@@ -168,7 +176,7 @@ function QueryConsole ({ runtime, ims }) {
       <View UNSAFE_className='mdm-card'>
         <Heading level={3} marginBottom='size-200'>API Mesh Endpoint Reference</Heading>
         <Text UNSAFE_className='mdm-text-muted' marginBottom='size-200'>
-          Master data is publicly available via API Mesh (no auth required for public entities).
+          Master data is publicly available via API Mesh (no auth required for public masters).
         </Text>
 
         <div className='mdm-code-block' style={{ marginBottom: 16 }}>
@@ -178,8 +186,8 @@ function QueryConsole ({ runtime, ims }) {
         <Heading level={4} marginTop='size-300' marginBottom='size-100'>Query All Records</Heading>
         <div className='mdm-code-block'>
           <pre>{`query {
-  mdmQuery(entity: "products", page: 1, pageSize: 20) {
-    entity
+  mdmQuery(master: "products", page: 1, pageSize: 20) {
+    master
     count
     total
     data
@@ -191,7 +199,7 @@ function QueryConsole ({ runtime, ims }) {
         <div className='mdm-code-block'>
           <pre>{`query {
   mdmQuery(
-    entity: "products"
+    master: "products"
     filter: "category=electronics&brand=sony"
     sort: "price"
     order: "desc"
@@ -199,7 +207,7 @@ function QueryConsole ({ runtime, ims }) {
     page: 1
     pageSize: 50
   ) {
-    entity count total data
+    master count total data
   }
 }`}</pre>
         </div>
@@ -207,8 +215,8 @@ function QueryConsole ({ runtime, ims }) {
         <Heading level={4} marginTop='size-300' marginBottom='size-100'>Get Single Record</Heading>
         <div className='mdm-code-block'>
           <pre>{`query {
-  mdmRecord(entity: "products", id: "SKU-001") {
-    entity
+  mdmRecord(master: "products", id: "SKU-001") {
+    master
     record
   }
 }`}</pre>

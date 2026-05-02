@@ -9,6 +9,7 @@ import ReactDOM from 'react-dom'
 import Runtime, { init } from '@adobe/exc-app'
 
 import App from './components/App'
+import { registerSession, deregisterSession } from './components/actionInvoker'
 import './index.css'
 
 window.React = require('react')
@@ -83,6 +84,18 @@ function bootstrapInExcShell () {
     if (imsOrg) {
       localStorage.setItem('mdm_ims_org', imsOrg)
     }
+
+    // Register user session — caches user identity (email/name) server-side
+    registerSession(ims).then(() => {
+      console.log('User session registered')
+    }).catch(err => {
+      console.warn('Session registration failed:', err.message)
+    })
+
+    // Clean up session on page unload / logout
+    window.addEventListener('beforeunload', () => {
+      deregisterSession(ims).catch(() => {})
+    })
 
     // render the actual react application and pass along the runtime and ims objects to make it available to the App
     ReactDOM.render(

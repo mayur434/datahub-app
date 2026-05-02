@@ -7,20 +7,19 @@
  * include-ims-credentials to self-authenticate.
  */
 
-const { getDbClient, safeFindOne, COLLECTIONS } = require('../mdm-utils')
+const { getDbClient, COLLECTIONS, getEnvConfig, getCachedSettings, getTimezoneDate } = require('../mdm-utils')
 
 async function main (params) {
-  console.log('Audit cleanup triggered at:', new Date().toISOString())
+  console.log('Audit cleanup triggered at:', getTimezoneDate(params))
 
   let client
   try {
     client = await getDbClient(params)
-    const settingsCol = await client.collection(COLLECTIONS.SETTINGS)
     const auditCol = await client.collection(COLLECTIONS.AUDIT)
 
-    // Read app settings
-    const settings = await safeFindOne(settingsCol, { settingsId: 'app-settings' })
-    const auditRetention = settings?.auditRetention || { enabled: true, retentionDays: 90, cleanupEnabled: false }
+    // Read app settings — support both `audit` (correct) and `auditRetention` (legacy) keys
+    const settings = await getCachedSettings(client)
+    const auditRetention = settings?.audit || settings?.auditRetention || { enabled: true, retentionDays: 90, cleanupEnabled: false }
 
     // Check if cleanup is enabled
     if (!auditRetention.cleanupEnabled) {
@@ -39,7 +38,8 @@ async function main (params) {
       }
     }
 
-    const retentionDays = auditRetention.retentionDays || 90
+    const env = getEnvConfig(params)
+    const retentionDays = auditRetention.retentionDays || env.auditRetentionDays
     const cutoffDate = new Date()
     cutoffDate.setDate(cutoffDate.getDate() - retentionDays)
     const cutoffISO = cutoffDate.toISOString()
@@ -65,8 +65,8 @@ async function main (params) {
 
     // Log the cleanup itself (meta audit)
     await auditCol.insertOne({
-      timestamp: new Date().toISOString(),
-      entityName: '_system',
+      timestamp: getTimezoneDate(params),
+      masterName: '_system',
       operation: 'audit-cleanup',
       actor: 'scheduler',
       status: 'success',

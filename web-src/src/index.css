@@ -1031,3 +1031,148 @@ body {
     display: none;
   }
 }
+
+/* ========================================
+   ADMIN CONSOLE
+   ======================================== */
+
+.admin-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px;
+}
+
+@media (max-width: 1100px) {
+  .admin-kpi-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+.admin-kpi-metric {
+  background: var(--spectrum-global-color-gray-50, #fff);
+  border: 1px solid var(--spectrum-global-color-gray-200, #e1e1e1);
+  border-radius: 8px;
+  padding: 16px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.admin-kpi-metric__title {
+  font-size: 12px !important;
+  font-weight: 600 !important;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--spectrum-global-color-gray-600) !important;
+}
+
+.admin-kpi-metric__value {
+  font-size: 28px !important;
+  font-weight: 700 !important;
+  line-height: 1.2;
+}
+
+.admin-kpi-metric__subtitle {
+  font-size: 12px !important;
+  color: var(--spectrum-global-color-gray-500) !important;
+}
+
+/* Tooltip icon (ⓘ) shown next to labels that have a tooltip */
+.admin-tooltip-icon {
+  display: inline-block;
+  margin-left: 4px;
+  font-size: 12px;
+  color: var(--spectrum-global-color-gray-500, #6e6e6e);
+  cursor: help;
+  vertical-align: middle;
+}
+
+/* Usage Bars */
+.admin-usage-bar {
+  height: 10px;
+  background: var(--spectrum-global-color-gray-200, #e1e1e1);
+  border-radius: 5px;
+  overflow: hidden;
+}
+
+.admin-usage-bar__fill {
+  height: 100%;
+  border-radius: 5px;
+  transition: width 0.5s ease;
+  min-width: 2px;
+}
+
+/* Mini Bars (for tables) */
+.admin-mini-bar {
+  display: inline-block;
+  width: 80px;
+  height: 6px;
+  background: var(--spectrum-global-color-gray-200, #e1e1e1);
+  border-radius: 3px;
+  overflow: hidden;
+  vertical-align: middle;
+}
+
+.admin-mini-bar__fill {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.3s ease;
+}
+
+/* Detail Grid */
+.admin-detail-grid {
+  display: flex;
+  flex-direction: column;
+}
+
+/* Error cell */
+.admin-error-cell {
+  max-width: 300px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--spectrum-global-color-red-600, #e34850);
+  font-size: 13px;
+}
+
+/* Bar Chart */
+.admin-bar-chart {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 120px;
+  padding: 8px 0;
+  overflow-x: auto;
+}
+
+.admin-bar-chart__col {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  flex: 1;
+  min-width: 20px;
+  max-width: 40px;
+  height: 100%;
+}
+
+.admin-bar-chart__bar-wrap {
+  flex: 1;
+  width: 100%;
+  display: flex;
+  align-items: flex-end;
+}
+
+.admin-bar-chart__bar {
+  width: 100%;
+  border-radius: 2px 2px 0 0;
+  min-height: 2px;
+  transition: height 0.3s ease;
+}
+
+.admin-bar-chart__label {
+  font-size: 9px;
+  color: var(--spectrum-global-color-gray-500);
+  margin-top: 4px;
+  text-align: center;
+  white-space: nowrap;
+}

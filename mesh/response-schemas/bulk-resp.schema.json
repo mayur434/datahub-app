@@ -1,0 +1,22 @@
+{
+  "type": "object",
+  "properties": {
+    "master": { "type": "string" },
+    "operation": { "type": "string" },
+    "total": { "type": "integer" },
+    "succeeded": { "type": "integer" },
+    "failed": { "type": "integer" },
+    "results": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "success": { "type": "boolean" },
+          "id": { "type": "string" },
+          "error": { "type": "string" }
+        }
+      }
+    },
+    "error": { "type": "string" }
+  }
+}

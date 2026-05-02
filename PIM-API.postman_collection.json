@@ -1,0 +1,567 @@
+{
+  "info": {
+    "name": "PIM App — MDM Public API",
+    "description": "# MDM Public API — Complete CRUD Collection\n\nAll operations are exposed via **Adobe API Mesh** as a single **GraphQL** endpoint.\n\n---\n\n## Endpoint\n\n```\nPOST {{mesh_url}}\n```\n\n## Authentication\n\n| Header | Value |\n|--------|-------|\n| `Content-Type` | `application/json` |\n| `x-partner-id` | Your partner ID |\n| `x-partner-key` | Your partner API key |\n\n**Read operations** (query, record, bulk fetch, facets) are publicly accessible for public masters — partner headers are optional.\n\n**Write operations** (create, update, patch, delete) **always** require valid partner credentials.\n\n## Prerequisites for Write Operations\n\n1. Master must have **visibility = public**\n2. Master must have **CRUD enabled** in Admin Console\n3. Partner must be **authorized** for the specific master\n4. The **allowed operations** (create/update/delete) must be enabled\n\n## Data Format for Mutations\n\n- The `data` field is always a **JSON-encoded string**\n- For single record mutations: `data` is a stringified JSON **object**\n- For bulk mutations: `data` is a stringified JSON **array**\n- System fields (`createdAt`, `updatedAt`, `createdBy`, `updatedBy`) are auto-managed and stripped if sent\n\n## Caching\n\n| Operation | Cache Behavior |\n|-----------|----------------|\n| Read queries | CDN cached: `max-age=60, s-maxage=900` (15 min edge) |\n| Mutations | `no-store` (never cached) |\n\n> After mutations, read queries may return stale data for up to 15 minutes due to CDN caching.\n\n## Error Codes\n\n| Code | Meaning |\n|------|---------|\n| 200 | Success |\n| 201 | Created (single create) |\n| 400 | Bad request (missing/invalid params) |\n| 401 | Unauthorized (invalid partner credentials) |\n| 403 | Forbidden (private master, CRUD disabled, or partner not authorized) |\n| 404 | Not found (master or record) |\n| 409 | Conflict (duplicate primary key on create) |\n| 429 | Rate limit exceeded |\n| 507 | Storage guardrail limit reached |",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "mesh_url",
+      "value": "https://edge-sandbox-graph.adobe.io/api/114b5a31-5c7f-4584-81eb-22241fc6411a/graphql",
+      "type": "string",
+      "description": "API Mesh GraphQL endpoint URL"
+    },
+    {
+      "key": "partner_id",
+      "value": "ptr_8d0bbe200cc3",
+      "type": "string",
+      "description": "Partner ID for authentication"
+    },
+    {
+      "key": "partner_key",
+      "value": "pk_E3kzh6wR1CwcXioPV2ZDsfi4Nigq356BrLWPRZerqNY",
+      "type": "string",
+      "description": "Partner API key for authentication"
+    },
+    {
+      "key": "master",
+      "value": "productcatalog",
+      "type": "string",
+      "description": "Master/entity name to operate on"
+    }
+  ],
+  "item": [
+    {
+      "name": "Queries (Read Operations)",
+      "description": "Read-only operations that fetch data. These are GraphQL **queries** and do not require partner credentials for public masters.\n\nResults are CDN-cached for up to 15 minutes (`s-maxage=900`).",
+      "item": [
+        {
+          "name": "1. Query Records — Basic List",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "x-partner-id", "value": "{{partner_id}}" },
+              { "key": "x-partner-key", "value": "{{partner_key}}" }
+            ],
+            "url": { "raw": "{{mesh_url}}", "host": ["{{mesh_url}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "{\n  mdmQuery(\n    master: \"{{master}}\"\n    page: 1\n    pageSize: 10\n    sort: \"name\"\n    order: \"asc\"\n    fields: \"master_id,sku,name,price\"\n  ) {\n    master\n    count\n    page\n    pageSize\n    total\n    data\n  }\n}",
+                "variables": ""
+              }
+            },
+            "description": "## Query Records — Paginated List\n\nFetch a paginated list of records from a master with optional sorting and field selection.\n\n### Parameters\n\n| Parameter | Type | Required | Default | Description |\n|-----------|------|----------|---------|-------------|\n| `master` | String | **Yes** | — | Master/entity name |\n| `page` | Int | No | 1 | Page number (1-based) |\n| `pageSize` | Int | No | From settings | Records per page (capped by `maxPageSize`) |\n| `sort` | String | No | Primary key | Field name to sort by |\n| `order` | String | No | `asc` | Sort direction: `asc` or `desc` |\n| `fields` | String | No | All fields | Comma-separated field names to return |\n| `filters` | String | No | — | `key=value` filter pairs separated by `,` or `&` |\n| `facets` | String | No | — | `true` to include facet aggregations |\n\n### Example Response\n\n```json\n{\n  \"data\": {\n    \"mdmQuery\": {\n      \"master\": \"productcatalog\",\n      \"count\": 2,\n      \"page\": 1,\n      \"pageSize\": 10,\n      \"total\": 48,\n      \"data\": [\n        {\n          \"master_id\": \"PROD-001\",\n          \"sku\": \"SKU-001\",\n          \"name\": \"Classic T-Shirt\",\n          \"price\": \"599.0\"\n        },\n        {\n          \"master_id\": \"PROD-002\",\n          \"sku\": \"SKU-002\",\n          \"name\": \"Running Shoes\",\n          \"price\": \"2499.0\"\n        }\n      ]\n    }\n  }\n}\n```\n\n### Notes\n- `count` = number of records in current page\n- `total` = total matching records across all pages\n- `data` is returned as a JSON string by GraphQL — parse it in your client"
+          },
+          "response": [
+            {
+              "name": "200 — Success",
+              "status": "OK",
+              "code": 200,
+              "header": [
+                { "key": "Content-Type", "value": "application/json" },
+                { "key": "Cache-Control", "value": "public, max-age=60, s-maxage=900" }
+              ],
+              "body": "{\n  \"data\": {\n    \"mdmQuery\": {\n      \"master\": \"productcatalog\",\n      \"count\": 2,\n      \"page\": 1,\n      \"pageSize\": 10,\n      \"total\": 48,\n      \"data\": [\n        { \"master_id\": \"PROD-001\", \"sku\": \"SKU-001\", \"name\": \"Classic T-Shirt\", \"price\": \"599.0\" },\n        { \"master_id\": \"PROD-002\", \"sku\": \"SKU-002\", \"name\": \"Running Shoes\", \"price\": \"2499.0\" }\n      ]\n    }\n  }\n}"
+            }
+          ]
+        },
+        {
+          "name": "2. Query Records — With Filters",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "x-partner-id", "value": "{{partner_id}}" },
+              { "key": "x-partner-key", "value": "{{partner_key}}" }
+            ],
+            "url": { "raw": "{{mesh_url}}", "host": ["{{mesh_url}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "{\n  mdmQuery(\n    master: \"{{master}}\"\n    pageSize: 5\n    filters: \"sku=CFG-TSHIRT\"\n    fields: \"master_id,sku,name,price\"\n  ) {\n    master\n    count\n    total\n    data\n  }\n}",
+                "variables": ""
+              }
+            },
+            "description": "## Query with Filters\n\nFilter records using `key=value` syntax.\n\n### Filter Syntax\n\n| Format | Example |\n|--------|---------|\n| Single filter | `sku=CFG-TSHIRT` |\n| Multiple (comma) | `sku=CFG-TSHIRT,category=Fashion` |\n| Multiple (ampersand) | `sku=CFG-TSHIRT&category=Fashion` |\n\n### Important\n\n- Filters are **case-insensitive** (exact match with regex `^value$`)\n- **JSON filter syntax is NOT supported** via API Mesh due to URL encoding of `{` and `}` characters\n- Filters match against the record's data fields\n\n### Example Response\n\n```json\n{\n  \"data\": {\n    \"mdmQuery\": {\n      \"master\": \"productcatalog\",\n      \"count\": 1,\n      \"total\": 1,\n      \"data\": [\n        {\n          \"master_id\": \"TSH-001\",\n          \"sku\": \"CFG-TSHIRT\",\n          \"name\": \"Classic T-Shirt\",\n          \"price\": \"599.0\"\n        }\n      ]\n    }\n  }\n}\n```"
+          },
+          "response": [
+            {
+              "name": "200 — Filtered Results",
+              "status": "OK",
+              "code": 200,
+              "header": [
+                { "key": "Content-Type", "value": "application/json" }
+              ],
+              "body": "{\n  \"data\": {\n    \"mdmQuery\": {\n      \"master\": \"productcatalog\",\n      \"count\": 1,\n      \"total\": 1,\n      \"data\": [\n        { \"master_id\": \"TSH-001\", \"sku\": \"CFG-TSHIRT\", \"name\": \"Classic T-Shirt\", \"price\": \"599.0\" }\n      ]\n    }\n  }\n}"
+            }
+          ]
+        },
+        {
+          "name": "3. Query Records — With Facets",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "x-partner-id", "value": "{{partner_id}}" },
+              { "key": "x-partner-key", "value": "{{partner_key}}" }
+            ],
+            "url": { "raw": "{{mesh_url}}", "host": ["{{mesh_url}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "{\n  mdmQuery(\n    master: \"{{master}}\"\n    pageSize: 5\n    facets: \"true\"\n  ) {\n    master\n    count\n    total\n    data\n    aggregations\n  }\n}",
+                "variables": ""
+              }
+            },
+            "description": "## Query with Inline Facets\n\nPass `facets: \"true\"` to include facet aggregations alongside query results.\n\nFacets are only returned if:\n1. The master has facets **enabled** in Admin Console\n2. The facet fields are configured\n3. Either `facets=true` is passed OR `returnWithQuery` is enabled\n\n### Example Response\n\n```json\n{\n  \"data\": {\n    \"mdmQuery\": {\n      \"master\": \"productcatalog\",\n      \"count\": 5,\n      \"total\": 48,\n      \"data\": [...],\n      \"aggregations\": [\n        {\n          \"field\": \"category\",\n          \"label\": \"Category\",\n          \"type\": \"value\",\n          \"values\": [\n            { \"value\": \"Fashion\", \"count\": 15, \"selected\": false },\n            { \"value\": \"Electronics\", \"count\": 12, \"selected\": false }\n          ]\n        }\n      ]\n    }\n  }\n}\n```"
+          },
+          "response": []
+        },
+        {
+          "name": "4. Get Single Record",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "x-partner-id", "value": "{{partner_id}}" },
+              { "key": "x-partner-key", "value": "{{partner_key}}" }
+            ],
+            "url": { "raw": "{{mesh_url}}", "host": ["{{mesh_url}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "{\n  mdmRecord(\n    master: \"{{master}}\"\n    id: \"REPLACE_WITH_RECORD_ID\"\n  ) {\n    master\n    data\n  }\n}",
+                "variables": ""
+              }
+            },
+            "description": "## Get Single Record by ID\n\nFetch a single record using its primary key value.\n\n### Parameters\n\n| Parameter | Type | Required | Description |\n|-----------|------|----------|-------------|\n| `master` | String | **Yes** | Master/entity name |\n| `id` | String | **Yes** | Primary key value of the record |\n\n### Example Request\n\nReplace `REPLACE_WITH_RECORD_ID` with an actual primary key value (e.g., `PROD-001`).\n\n### Example Response\n\n```json\n{\n  \"data\": {\n    \"mdmRecord\": {\n      \"master\": \"productcatalog\",\n      \"data\": {\n        \"master_id\": \"PROD-001\",\n        \"sku\": \"SKU-001\",\n        \"name\": \"Classic T-Shirt\",\n        \"price\": \"599.0\",\n        \"category\": \"Fashion\",\n        \"_createdAt\": \"2026-05-01T10:30:00+05:30\",\n        \"_createdBy\": \"partner:DEPT\"\n      }\n    }\n  }\n}\n```\n\n### Error Response (404)\n\n```json\n{\n  \"data\": {\n    \"mdmRecord\": {\n      \"error\": \"Record 'INVALID-ID' not found\"\n    }\n  }\n}\n```"
+          },
+          "response": [
+            {
+              "name": "200 — Record Found",
+              "status": "OK",
+              "code": 200,
+              "header": [
+                { "key": "Content-Type", "value": "application/json" }
+              ],
+              "body": "{\n  \"data\": {\n    \"mdmRecord\": {\n      \"master\": \"productcatalog\",\n      \"data\": {\n        \"master_id\": \"PROD-001\",\n        \"sku\": \"SKU-001\",\n        \"name\": \"Classic T-Shirt\",\n        \"price\": \"599.0\",\n        \"category\": \"Fashion\"\n      }\n    }\n  }\n}"
+            },
+            {
+              "name": "404 — Not Found",
+              "status": "Not Found",
+              "code": 404,
+              "header": [
+                { "key": "Content-Type", "value": "application/json" }
+              ],
+              "body": "{\n  \"data\": {\n    \"mdmRecord\": {\n      \"error\": \"Record 'INVALID-ID' not found\"\n    }\n  }\n}"
+            }
+          ]
+        },
+        {
+          "name": "5. Bulk Fetch (Multiple IDs)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "x-partner-id", "value": "{{partner_id}}" },
+              { "key": "x-partner-key", "value": "{{partner_key}}" }
+            ],
+            "url": { "raw": "{{mesh_url}}", "host": ["{{mesh_url}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "{\n  mdmBulkFetch(\n    master: \"{{master}}\"\n    ids: \"PROD-001,PROD-002,PROD-003\"\n  ) {\n    master\n    count\n    requested\n    data\n    notFound\n  }\n}",
+                "variables": ""
+              }
+            },
+            "description": "## Bulk Fetch — Multiple Records by IDs\n\nFetch multiple records in a single request by passing **comma-separated** primary key values.\n\n### Parameters\n\n| Parameter | Type | Required | Description |\n|-----------|------|----------|-------------|\n| `master` | String | **Yes** | Master/entity name |\n| `ids` | String | **Yes** | Comma-separated primary key values |\n\n### Example\n\n```\nids: \"PROD-001,PROD-002,PROD-003\"\n```\n\n### Response Fields\n\n| Field | Description |\n|-------|-------------|\n| `count` | Number of records found |\n| `requested` | Number of IDs requested |\n| `data` | Array of found record objects |\n| `notFound` | Array of IDs that were not found (only present if any are missing) |\n\n### Example Response\n\n```json\n{\n  \"data\": {\n    \"mdmBulkFetch\": {\n      \"master\": \"productcatalog\",\n      \"count\": 2,\n      \"requested\": 3,\n      \"data\": [\n        { \"master_id\": \"PROD-001\", \"sku\": \"SKU-001\", \"name\": \"Product 1\" },\n        { \"master_id\": \"PROD-002\", \"sku\": \"SKU-002\", \"name\": \"Product 2\" }\n      ],\n      \"notFound\": [\"PROD-003\"]\n    }\n  }\n}\n```\n\n### Notes\n- Deleted records are excluded from results and appear in `notFound`\n- Results may be CDN-cached; recently created/updated records might not appear immediately"
+          },
+          "response": [
+            {
+              "name": "200 — Partial Match",
+              "status": "OK",
+              "code": 200,
+              "header": [
+                { "key": "Content-Type", "value": "application/json" }
+              ],
+              "body": "{\n  \"data\": {\n    \"mdmBulkFetch\": {\n      \"master\": \"productcatalog\",\n      \"count\": 2,\n      \"requested\": 3,\n      \"data\": [\n        { \"master_id\": \"PROD-001\", \"sku\": \"SKU-001\", \"name\": \"Product 1\" },\n        { \"master_id\": \"PROD-002\", \"sku\": \"SKU-002\", \"name\": \"Product 2\" }\n      ],\n      \"notFound\": [\"PROD-003\"]\n    }\n  }\n}"
+            },
+            {
+              "name": "200 — All Found",
+              "status": "OK",
+              "code": 200,
+              "header": [
+                { "key": "Content-Type", "value": "application/json" }
+              ],
+              "body": "{\n  \"data\": {\n    \"mdmBulkFetch\": {\n      \"master\": \"productcatalog\",\n      \"count\": 2,\n      \"requested\": 2,\n      \"data\": [\n        { \"master_id\": \"PROD-001\", \"sku\": \"SKU-001\", \"name\": \"Product 1\" },\n        { \"master_id\": \"PROD-002\", \"sku\": \"SKU-002\", \"name\": \"Product 2\" }\n      ]\n    }\n  }\n}"
+            }
+          ]
+        },
+        {
+          "name": "6. Get Facets (Dedicated)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "x-partner-id", "value": "{{partner_id}}" },
+              { "key": "x-partner-key", "value": "{{partner_key}}" }
+            ],
+            "url": { "raw": "{{mesh_url}}", "host": ["{{mesh_url}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "{\n  mdmFacets(\n    master: \"{{master}}\"\n    values: \"true\"\n  ) {\n    master\n    facetsEnabled\n    facetableFields\n    totalRecords\n    facets {\n      field\n      label\n      type\n      values {\n        value\n        count\n      }\n    }\n  }\n}",
+                "variables": ""
+              }
+            },
+            "description": "## Get Facets — Dedicated Endpoint\n\nRetrieve facet/aggregation data for a master. This is a separate endpoint from `mdmQuery` that returns **only** facet data.\n\n### Parameters\n\n| Parameter | Type | Required | Description |\n|-----------|------|----------|-------------|\n| `master` | String | **Yes** | Master/entity name |\n| `values` | String | No | `true` to include individual facet values with counts |\n| `filters` | String | No | `key=value` filters to scope facet computation |\n\n### Prerequisites\n\n- Master must have facets **enabled** in Admin Console\n- Facet fields must be configured\n\n### Response Fields\n\n| Field | Description |\n|-------|-------------|\n| `facetsEnabled` | Whether facets are enabled for this master |\n| `facetableFields` | List of fields configured for faceting |\n| `totalRecords` | Total number of active records |\n| `facets` | Array of facet objects with field, label, type, and values |\n\n### Example Response\n\n```json\n{\n  \"data\": {\n    \"mdmFacets\": {\n      \"master\": \"productcatalog\",\n      \"facetsEnabled\": true,\n      \"facetableFields\": [\"category\", \"brand\"],\n      \"totalRecords\": 48,\n      \"facets\": [\n        {\n          \"field\": \"category\",\n          \"label\": \"Category\",\n          \"type\": \"value\",\n          \"values\": [\n            { \"value\": \"Fashion\", \"count\": 15 },\n            { \"value\": \"Electronics\", \"count\": 12 },\n            { \"value\": \"Home\", \"count\": 8 }\n          ]\n        }\n      ]\n    }\n  }\n}\n```"
+          },
+          "response": [
+            {
+              "name": "200 — Facets",
+              "status": "OK",
+              "code": 200,
+              "header": [
+                { "key": "Content-Type", "value": "application/json" }
+              ],
+              "body": "{\n  \"data\": {\n    \"mdmFacets\": {\n      \"master\": \"productcatalog\",\n      \"facetsEnabled\": true,\n      \"facetableFields\": [\"category\", \"brand\"],\n      \"totalRecords\": 48,\n      \"facets\": [\n        {\n          \"field\": \"category\",\n          \"label\": \"Category\",\n          \"type\": \"value\",\n          \"values\": [\n            { \"value\": \"Fashion\", \"count\": 15 },\n            { \"value\": \"Electronics\", \"count\": 12 }\n          ]\n        }\n      ]\n    }\n  }\n}"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Single Record Mutations",
+      "description": "Write operations on individual records. All mutations require **partner credentials** (`x-partner-id` and `x-partner-key` headers).\n\nThe `data` field must be a **JSON-encoded string** of the record object.\n\n### Important Rules\n- Primary key field must be included in create/update\n- System fields (`createdAt`, `updatedAt`, `createdBy`, `updatedBy`) are auto-managed — stripped if sent\n- Schema validation is applied if the master has a schema defined\n- Mutations return `Cache-Control: no-store` (never cached)",
+      "item": [
+        {
+          "name": "7. Create Record",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "x-partner-id", "value": "{{partner_id}}" },
+              { "key": "x-partner-key", "value": "{{partner_key}}" }
+            ],
+            "url": { "raw": "{{mesh_url}}", "host": ["{{mesh_url}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "mutation {\n  mdmCreate(\n    master: \"{{master}}\"\n    input: {\n      data: \"{\\\"master_id\\\":\\\"PM-NEW-001\\\",\\\"sku\\\":\\\"SKU-NEW-001\\\",\\\"name\\\":\\\"Postman Test Product\\\",\\\"price\\\":\\\"99.99\\\",\\\"category\\\":\\\"Testing\\\"}\"\n    }\n  ) {\n    success\n    master\n    operation\n    record\n    error\n  }\n}",
+                "variables": ""
+              }
+            },
+            "description": "## Create a Single Record\n\nInsert a new record into a master. The record data is passed as a **JSON-encoded string** in the `data` field.\n\n### Parameters\n\n| Parameter | Type | Required | Description |\n|-----------|------|----------|-------------|\n| `master` | String | **Yes** | Master/entity name |\n| `input.data` | String | **Yes** | JSON string of the record object |\n\n### Data Encoding\n\nThe `data` field is a JSON string wrapped in quotes. Inner quotes must be escaped:\n\n```\ndata: \"{\\\"master_id\\\":\\\"PM-NEW-001\\\",\\\"sku\\\":\\\"SKU-NEW-001\\\",\\\"name\\\":\\\"Product Name\\\"}\"\n```\n\nWhich represents:\n```json\n{\n  \"master_id\": \"PM-NEW-001\",\n  \"sku\": \"SKU-NEW-001\",\n  \"name\": \"Product Name\"\n}\n```\n\n### Rules\n\n1. **Primary key** field (e.g., `master_id`) must be included and its value must be **unique**\n2. System fields are auto-injected: `_createdAt`, `_createdBy`, `_updatedAt`, `_updatedBy` (if record audit is enabled)\n3. If the master has a schema, the record is validated against it\n4. Duplicate primary key returns `409 Conflict`\n5. Storage guardrails are checked before insert\n\n### Example Response (201 Created)\n\n```json\n{\n  \"data\": {\n    \"mdmCreate\": {\n      \"success\": true,\n      \"master\": \"productcatalog\",\n      \"operation\": \"create\",\n      \"record\": {\n        \"master_id\": \"PM-NEW-001\",\n        \"sku\": \"SKU-NEW-001\",\n        \"name\": \"Postman Test Product\",\n        \"price\": \"99.99\",\n        \"category\": \"Testing\",\n        \"_createdAt\": \"2026-05-02T20:00:00+05:30\",\n        \"_createdBy\": \"partner:DEPT\"\n      },\n      \"error\": null\n    }\n  }\n}\n```\n\n### Error: Duplicate Primary Key (409)\n\n```json\n{\n  \"data\": {\n    \"mdmCreate\": {\n      \"error\": \"Record with master_id=\\\"PM-NEW-001\\\" already exists\"\n    }\n  }\n}\n```\n\n### Error: Validation Failed (400)\n\n```json\n{\n  \"data\": {\n    \"mdmCreate\": {\n      \"error\": \"Validation failed: field 'sku' is required\"\n    }\n  }\n}\n```"
+          },
+          "response": [
+            {
+              "name": "201 — Created",
+              "status": "Created",
+              "code": 201,
+              "header": [
+                { "key": "Content-Type", "value": "application/json" },
+                { "key": "Cache-Control", "value": "no-store" }
+              ],
+              "body": "{\n  \"data\": {\n    \"mdmCreate\": {\n      \"success\": true,\n      \"master\": \"productcatalog\",\n      \"operation\": \"create\",\n      \"record\": {\n        \"master_id\": \"PM-NEW-001\",\n        \"sku\": \"SKU-NEW-001\",\n        \"name\": \"Postman Test Product\",\n        \"price\": \"99.99\",\n        \"category\": \"Testing\",\n        \"_createdAt\": \"2026-05-02T20:00:00+05:30\",\n        \"_createdBy\": \"partner:DEPT\"\n      },\n      \"error\": null\n    }\n  }\n}"
+            },
+            {
+              "name": "409 — Duplicate Key",
+              "status": "Conflict",
+              "code": 409,
+              "header": [
+                { "key": "Content-Type", "value": "application/json" }
+              ],
+              "body": "{\n  \"data\": {\n    \"mdmCreate\": {\n      \"error\": \"Record with master_id=\\\"PM-NEW-001\\\" already exists\"\n    }\n  }\n}"
+            },
+            {
+              "name": "400 — Validation Error",
+              "status": "Bad Request",
+              "code": 400,
+              "header": [
+                { "key": "Content-Type", "value": "application/json" }
+              ],
+              "body": "{\n  \"data\": {\n    \"mdmCreate\": {\n      \"error\": \"Validation failed: field 'sku' is required\"\n    }\n  }\n}"
+            }
+          ]
+        },
+        {
+          "name": "8. Update Record (Full Replace)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "x-partner-id", "value": "{{partner_id}}" },
+              { "key": "x-partner-key", "value": "{{partner_key}}" }
+            ],
+            "url": { "raw": "{{mesh_url}}", "host": ["{{mesh_url}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "mutation {\n  mdmUpdate(\n    master: \"{{master}}\"\n    id: \"PM-NEW-001\"\n    input: {\n      data: \"{\\\"master_id\\\":\\\"PM-NEW-001\\\",\\\"sku\\\":\\\"SKU-NEW-001\\\",\\\"name\\\":\\\"Updated via Postman\\\",\\\"price\\\":\\\"149.99\\\",\\\"category\\\":\\\"Testing\\\",\\\"description\\\":\\\"Added description field\\\"}\"\n    }\n  ) {\n    success\n    master\n    operation\n    record\n    error\n  }\n}",
+                "variables": ""
+              }
+            },
+            "description": "## Update Record — Full Replace\n\nCompletely replaces the record data with the provided object. **All fields must be provided** — any field not included will be removed from the record.\n\n### Parameters\n\n| Parameter | Type | Required | Description |\n|-----------|------|----------|-------------|\n| `master` | String | **Yes** | Master/entity name |\n| `id` | String | **Yes** | Primary key value of the record to update |\n| `input.data` | String | **Yes** | JSON string of the **complete** replacement record |\n\n### Update vs Patch\n\n| Behavior | Update (PUT) | Patch (PATCH) |\n|----------|-------------|---------------|\n| Fields sent | **All required** | Only changed fields |\n| Missing fields | **Removed** from record | Preserved from existing |\n| Use when | Replacing entire record | Changing 1-2 fields |\n\n### Example: Before → After\n\n**Before (existing record):**\n```json\n{ \"master_id\": \"PM-NEW-001\", \"sku\": \"SKU-NEW-001\", \"name\": \"Original\", \"price\": \"99.99\", \"tags\": \"sale\" }\n```\n\n**Update data (note: `tags` field not included):**\n```json\n{ \"master_id\": \"PM-NEW-001\", \"sku\": \"SKU-NEW-001\", \"name\": \"Updated\", \"price\": \"149.99\" }\n```\n\n**After: `tags` field is GONE**\n```json\n{ \"master_id\": \"PM-NEW-001\", \"sku\": \"SKU-NEW-001\", \"name\": \"Updated\", \"price\": \"149.99\" }\n```\n\n### Example Response\n\n```json\n{\n  \"data\": {\n    \"mdmUpdate\": {\n      \"success\": true,\n      \"master\": \"productcatalog\",\n      \"operation\": \"update\",\n      \"record\": {\n        \"master_id\": \"PM-NEW-001\",\n        \"sku\": \"SKU-NEW-001\",\n        \"name\": \"Updated via Postman\",\n        \"price\": \"149.99\",\n        \"category\": \"Testing\",\n        \"description\": \"Added description field\"\n      },\n      \"error\": null\n    }\n  }\n}\n```\n\n### Error: Record Not Found (404)\n\n```json\n{\n  \"data\": {\n    \"mdmUpdate\": {\n      \"error\": \"Record 'NONEXISTENT' not found\"\n    }\n  }\n}\n```"
+          },
+          "response": [
+            {
+              "name": "200 — Updated",
+              "status": "OK",
+              "code": 200,
+              "header": [
+                { "key": "Content-Type", "value": "application/json" },
+                { "key": "Cache-Control", "value": "no-store" }
+              ],
+              "body": "{\n  \"data\": {\n    \"mdmUpdate\": {\n      \"success\": true,\n      \"master\": \"productcatalog\",\n      \"operation\": \"update\",\n      \"record\": {\n        \"master_id\": \"PM-NEW-001\",\n        \"sku\": \"SKU-NEW-001\",\n        \"name\": \"Updated via Postman\",\n        \"price\": \"149.99\",\n        \"category\": \"Testing\",\n        \"description\": \"Added description field\"\n      },\n      \"error\": null\n    }\n  }\n}"
+            },
+            {
+              "name": "404 — Not Found",
+              "status": "Not Found",
+              "code": 404,
+              "header": [
+                { "key": "Content-Type", "value": "application/json" }
+              ],
+              "body": "{\n  \"data\": {\n    \"mdmUpdate\": {\n      \"error\": \"Record 'NONEXISTENT' not found\"\n    }\n  }\n}"
+            }
+          ]
+        },
+        {
+          "name": "9. Patch Record (Partial Update)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "x-partner-id", "value": "{{partner_id}}" },
+              { "key": "x-partner-key", "value": "{{partner_key}}" }
+            ],
+            "url": { "raw": "{{mesh_url}}", "host": ["{{mesh_url}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "mutation {\n  mdmPatch(\n    master: \"{{master}}\"\n    id: \"PM-NEW-001\"\n    input: {\n      data: \"{\\\"price\\\":\\\"199.99\\\",\\\"tags\\\":\\\"on-sale,featured\\\"}\"\n    }\n  ) {\n    success\n    master\n    operation\n    record\n    error\n  }\n}",
+                "variables": ""
+              }
+            },
+            "description": "## Patch Record — Partial Update\n\nMerges provided fields into the existing record. **Only send the fields you want to change** — all other fields are preserved.\n\n### Parameters\n\n| Parameter | Type | Required | Description |\n|-----------|------|----------|-------------|\n| `master` | String | **Yes** | Master/entity name |\n| `id` | String | **Yes** | Primary key value of the record to patch |\n| `input.data` | String | **Yes** | JSON string of **only** the fields to change |\n\n### How Patch Works\n\n```\nExisting:  { name: \"Product\", price: \"99\",  tags: \"old\" }\nPatch:     {                   price: \"199\", color: \"red\" }\nResult:    { name: \"Product\", price: \"199\", tags: \"old\", color: \"red\" }\n```\n\n- Existing fields NOT in the patch are **preserved**\n- Fields in the patch **overwrite** existing values\n- New fields in the patch are **added**\n- The merged result is validated against the schema (if configured)\n\n### Example: Change only `price` and add `tags`\n\n```json\n{ \"price\": \"199.99\", \"tags\": \"on-sale,featured\" }\n```\n\nAll other fields (name, sku, category, etc.) remain unchanged.\n\n### Example Response\n\n```json\n{\n  \"data\": {\n    \"mdmPatch\": {\n      \"success\": true,\n      \"master\": \"productcatalog\",\n      \"operation\": \"patch\",\n      \"record\": {\n        \"master_id\": \"PM-NEW-001\",\n        \"sku\": \"SKU-NEW-001\",\n        \"name\": \"Updated via Postman\",\n        \"price\": \"199.99\",\n        \"category\": \"Testing\",\n        \"description\": \"Added description field\",\n        \"tags\": \"on-sale,featured\"\n      },\n      \"error\": null\n    }\n  }\n}\n```"
+          },
+          "response": [
+            {
+              "name": "200 — Patched",
+              "status": "OK",
+              "code": 200,
+              "header": [
+                { "key": "Content-Type", "value": "application/json" },
+                { "key": "Cache-Control", "value": "no-store" }
+              ],
+              "body": "{\n  \"data\": {\n    \"mdmPatch\": {\n      \"success\": true,\n      \"master\": \"productcatalog\",\n      \"operation\": \"patch\",\n      \"record\": {\n        \"master_id\": \"PM-NEW-001\",\n        \"sku\": \"SKU-NEW-001\",\n        \"name\": \"Updated via Postman\",\n        \"price\": \"199.99\",\n        \"category\": \"Testing\",\n        \"tags\": \"on-sale,featured\"\n      },\n      \"error\": null\n    }\n  }\n}"
+            }
+          ]
+        },
+        {
+          "name": "10. Delete Record",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "x-partner-id", "value": "{{partner_id}}" },
+              { "key": "x-partner-key", "value": "{{partner_key}}" }
+            ],
+            "url": { "raw": "{{mesh_url}}", "host": ["{{mesh_url}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "mutation {\n  mdmDelete(\n    master: \"{{master}}\"\n    id: \"PM-NEW-001\"\n  ) {\n    success\n    master\n    operation\n    id\n    error\n  }\n}",
+                "variables": ""
+              }
+            },
+            "description": "## Delete Record — Soft Delete\n\nSoft-deletes a record by marking it as `deleted: true`. The record is **not physically removed** from the database.\n\n### Parameters\n\n| Parameter | Type | Required | Description |\n|-----------|------|----------|-------------|\n| `master` | String | **Yes** | Master/entity name |\n| `id` | String | **Yes** | Primary key value of the record to delete |\n\n### Behavior\n\n- Record is flagged as `deleted: true` with `deletedAt` timestamp and `deletedBy` partner info\n- Deleted records are **excluded** from all query results, fetch, and facets\n- Record count on the master is updated\n- An audit log entry is created\n- The delete is **irreversible** via API (requires admin to restore)\n\n### Example Response\n\n```json\n{\n  \"data\": {\n    \"mdmDelete\": {\n      \"success\": true,\n      \"master\": \"productcatalog\",\n      \"operation\": \"delete\",\n      \"id\": \"PM-NEW-001\",\n      \"error\": null\n    }\n  }\n}\n```\n\n### Error: Already Deleted / Not Found (404)\n\n```json\n{\n  \"data\": {\n    \"mdmDelete\": {\n      \"error\": \"Record 'PM-NEW-001' not found\"\n    }\n  }\n}\n```\n\n### Tip: Verify Deletion\n\nAfter deleting, query the record to confirm:\n```graphql\n{ mdmRecord(master: \"productcatalog\", id: \"PM-NEW-001\") { data } }\n```\nShould return a 404 error."
+          },
+          "response": [
+            {
+              "name": "200 — Deleted",
+              "status": "OK",
+              "code": 200,
+              "header": [
+                { "key": "Content-Type", "value": "application/json" },
+                { "key": "Cache-Control", "value": "no-store" }
+              ],
+              "body": "{\n  \"data\": {\n    \"mdmDelete\": {\n      \"success\": true,\n      \"master\": \"productcatalog\",\n      \"operation\": \"delete\",\n      \"id\": \"PM-NEW-001\",\n      \"error\": null\n    }\n  }\n}"
+            },
+            {
+              "name": "404 — Not Found",
+              "status": "Not Found",
+              "code": 404,
+              "header": [
+                { "key": "Content-Type", "value": "application/json" }
+              ],
+              "body": "{\n  \"data\": {\n    \"mdmDelete\": {\n      \"error\": \"Record 'PM-NEW-001' not found\"\n    }\n  }\n}"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Bulk Mutations",
+      "description": "Bulk write operations that process **multiple records in a single request**.\n\nAll bulk mutations use the `data` field containing a **JSON-encoded string of an array**.\n\n### Key Behaviors\n\n- Each record is processed **independently** — failures do NOT roll back other records\n- Response includes per-item `results` with individual `success`/`error` status\n- `total`, `succeeded`, `failed` counters summarize the batch\n- Partner credentials are required\n- Storage guardrails are checked before bulk create\n\n### Data Format Summary\n\n| Operation | Data Format |\n|-----------|-------------|\n| Bulk Create | `[{ record1 }, { record2 }, ...]` — Array of record objects |\n| Bulk Update | `[{ id, data: {full record} }, ...]` — Array of `{id, data}` pairs |\n| Bulk Patch | `[{ id, data: {partial} }, ...]` — Array of `{id, data}` with only changed fields |\n| Bulk Delete | `[\"id1\", \"id2\", ...]` — Array of primary key strings |",
+      "item": [
+        {
+          "name": "11. Bulk Create",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "x-partner-id", "value": "{{partner_id}}" },
+              { "key": "x-partner-key", "value": "{{partner_key}}" }
+            ],
+            "url": { "raw": "{{mesh_url}}", "host": ["{{mesh_url}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "mutation {\n  mdmBulkCreate(\n    master: \"{{master}}\"\n    input: {\n      data: \"[{\\\"master_id\\\":\\\"PM-BLK-001\\\",\\\"sku\\\":\\\"BLK-SKU-001\\\",\\\"name\\\":\\\"Bulk Product 1\\\",\\\"price\\\":\\\"100\\\",\\\"category\\\":\\\"Bulk Test\\\"},{\\\"master_id\\\":\\\"PM-BLK-002\\\",\\\"sku\\\":\\\"BLK-SKU-002\\\",\\\"name\\\":\\\"Bulk Product 2\\\",\\\"price\\\":\\\"200\\\",\\\"category\\\":\\\"Bulk Test\\\"},{\\\"master_id\\\":\\\"PM-BLK-003\\\",\\\"sku\\\":\\\"BLK-SKU-003\\\",\\\"name\\\":\\\"Bulk Product 3\\\",\\\"price\\\":\\\"300\\\",\\\"category\\\":\\\"Bulk Test\\\"}]\"\n    }\n  ) {\n    master\n    operation\n    total\n    succeeded\n    failed\n    results {\n      success\n      id\n      error\n    }\n  }\n}",
+                "variables": ""
+              }
+            },
+            "description": "## Bulk Create — Multiple Records\n\nCreate multiple records in a single request. Each record in the array is processed independently.\n\n### Parameters\n\n| Parameter | Type | Required | Description |\n|-----------|------|----------|-------------|\n| `master` | String | **Yes** | Master/entity name |\n| `input.data` | String | **Yes** | JSON string of an **array of record objects** |\n\n### Data Format\n\nThe `data` field is a JSON string containing an array of record objects:\n\n```json\n[\n  { \"master_id\": \"PM-BLK-001\", \"sku\": \"BLK-SKU-001\", \"name\": \"Product 1\", \"price\": \"100\" },\n  { \"master_id\": \"PM-BLK-002\", \"sku\": \"BLK-SKU-002\", \"name\": \"Product 2\", \"price\": \"200\" },\n  { \"master_id\": \"PM-BLK-003\", \"sku\": \"BLK-SKU-003\", \"name\": \"Product 3\", \"price\": \"300\" }\n]\n```\n\nThis gets stringified and escaped inside the GraphQL query.\n\n### Rules (per record)\n\n1. Primary key field is **required** and must be **unique**\n2. Schema validation applies if configured\n3. Duplicate primary key → individual failure (other records still succeed)\n4. Storage guardrails are checked for the entire batch\n\n### Example Response — All Succeed\n\n```json\n{\n  \"data\": {\n    \"mdmBulkCreate\": {\n      \"master\": \"productcatalog\",\n      \"operation\": \"bulkCreate\",\n      \"total\": 3,\n      \"succeeded\": 3,\n      \"failed\": 0,\n      \"results\": [\n        { \"success\": true, \"id\": \"PM-BLK-001\", \"error\": null },\n        { \"success\": true, \"id\": \"PM-BLK-002\", \"error\": null },\n        { \"success\": true, \"id\": \"PM-BLK-003\", \"error\": null }\n      ]\n    }\n  }\n}\n```\n\n### Example Response — Partial Failure\n\n```json\n{\n  \"data\": {\n    \"mdmBulkCreate\": {\n      \"total\": 3,\n      \"succeeded\": 1,\n      \"failed\": 2,\n      \"results\": [\n        { \"success\": true, \"id\": \"PM-BLK-004\", \"error\": null },\n        { \"success\": false, \"id\": \"PM-BLK-001\", \"error\": \"Already exists\" },\n        { \"success\": false, \"id\": null, \"error\": \"Primary key \\\"master_id\\\" is required\" }\n      ]\n    }\n  }\n}\n```"
+          },
+          "response": [
+            {
+              "name": "200 — All Succeeded",
+              "status": "OK",
+              "code": 200,
+              "header": [
+                { "key": "Content-Type", "value": "application/json" },
+                { "key": "Cache-Control", "value": "no-store" }
+              ],
+              "body": "{\n  \"data\": {\n    \"mdmBulkCreate\": {\n      \"master\": \"productcatalog\",\n      \"operation\": \"bulkCreate\",\n      \"total\": 3,\n      \"succeeded\": 3,\n      \"failed\": 0,\n      \"results\": [\n        { \"success\": true, \"id\": \"PM-BLK-001\", \"error\": null },\n        { \"success\": true, \"id\": \"PM-BLK-002\", \"error\": null },\n        { \"success\": true, \"id\": \"PM-BLK-003\", \"error\": null }\n      ]\n    }\n  }\n}"
+            },
+            {
+              "name": "200 — Partial Failure (Duplicates)",
+              "status": "OK",
+              "code": 200,
+              "header": [
+                { "key": "Content-Type", "value": "application/json" }
+              ],
+              "body": "{\n  \"data\": {\n    \"mdmBulkCreate\": {\n      \"master\": \"productcatalog\",\n      \"operation\": \"bulkCreate\",\n      \"total\": 3,\n      \"succeeded\": 1,\n      \"failed\": 2,\n      \"results\": [\n        { \"success\": true, \"id\": \"PM-BLK-004\", \"error\": null },\n        { \"success\": false, \"id\": \"PM-BLK-001\", \"error\": \"Already exists\" },\n        { \"success\": false, \"id\": \"PM-BLK-002\", \"error\": \"Already exists\" }\n      ]\n    }\n  }\n}"
+            }
+          ]
+        },
+        {
+          "name": "12. Bulk Update (Full Replace)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "x-partner-id", "value": "{{partner_id}}" },
+              { "key": "x-partner-key", "value": "{{partner_key}}" }
+            ],
+            "url": { "raw": "{{mesh_url}}", "host": ["{{mesh_url}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "mutation {\n  mdmBulkUpdate(\n    master: \"{{master}}\"\n    input: {\n      data: \"[{\\\"id\\\":\\\"PM-BLK-001\\\",\\\"data\\\":{\\\"master_id\\\":\\\"PM-BLK-001\\\",\\\"sku\\\":\\\"BLK-SKU-001\\\",\\\"name\\\":\\\"Bulk Updated 1\\\",\\\"price\\\":\\\"999\\\",\\\"category\\\":\\\"Updated\\\"}},{\\\"id\\\":\\\"PM-BLK-002\\\",\\\"data\\\":{\\\"master_id\\\":\\\"PM-BLK-002\\\",\\\"sku\\\":\\\"BLK-SKU-002\\\",\\\"name\\\":\\\"Bulk Updated 2\\\",\\\"price\\\":\\\"888\\\",\\\"category\\\":\\\"Updated\\\"}}]\"\n    }\n  ) {\n    master\n    operation\n    total\n    succeeded\n    failed\n    results {\n      success\n      id\n      error\n    }\n  }\n}",
+                "variables": ""
+              }
+            },
+            "description": "## Bulk Update — Full Replace Multiple Records\n\nReplace multiple records entirely. Each item needs `id` (primary key) and `data` (the complete replacement object).\n\n### Parameters\n\n| Parameter | Type | Required | Description |\n|-----------|------|----------|-------------|\n| `master` | String | **Yes** | Master/entity name |\n| `input.data` | String | **Yes** | JSON string of array of `{ id, data }` objects |\n\n### Data Format\n\n```json\n[\n  {\n    \"id\": \"PM-BLK-001\",\n    \"data\": {\n      \"master_id\": \"PM-BLK-001\",\n      \"sku\": \"BLK-SKU-001\",\n      \"name\": \"Bulk Updated 1\",\n      \"price\": \"999\",\n      \"category\": \"Updated\"\n    }\n  },\n  {\n    \"id\": \"PM-BLK-002\",\n    \"data\": {\n      \"master_id\": \"PM-BLK-002\",\n      \"sku\": \"BLK-SKU-002\",\n      \"name\": \"Bulk Updated 2\",\n      \"price\": \"888\",\n      \"category\": \"Updated\"\n    }\n  }\n]\n```\n\n### Important\n\n- This is a **full replace** — each `data` object must contain ALL fields\n- Any field missing from `data` will be removed from the record\n- Use **Bulk Patch** instead if you only want to change specific fields\n- Records not found are reported as individual failures\n\n### Example Response\n\n```json\n{\n  \"data\": {\n    \"mdmBulkUpdate\": {\n      \"master\": \"productcatalog\",\n      \"operation\": \"bulkUpdate\",\n      \"total\": 2,\n      \"succeeded\": 2,\n      \"failed\": 0,\n      \"results\": [\n        { \"success\": true, \"id\": \"PM-BLK-001\", \"error\": null },\n        { \"success\": true, \"id\": \"PM-BLK-002\", \"error\": null }\n      ]\n    }\n  }\n}\n```"
+          },
+          "response": [
+            {
+              "name": "200 — All Updated",
+              "status": "OK",
+              "code": 200,
+              "header": [
+                { "key": "Content-Type", "value": "application/json" },
+                { "key": "Cache-Control", "value": "no-store" }
+              ],
+              "body": "{\n  \"data\": {\n    \"mdmBulkUpdate\": {\n      \"master\": \"productcatalog\",\n      \"operation\": \"bulkUpdate\",\n      \"total\": 2,\n      \"succeeded\": 2,\n      \"failed\": 0,\n      \"results\": [\n        { \"success\": true, \"id\": \"PM-BLK-001\", \"error\": null },\n        { \"success\": true, \"id\": \"PM-BLK-002\", \"error\": null }\n      ]\n    }\n  }\n}"
+            },
+            {
+              "name": "200 — Partial Failure (Not Found)",
+              "status": "OK",
+              "code": 200,
+              "header": [
+                { "key": "Content-Type", "value": "application/json" }
+              ],
+              "body": "{\n  \"data\": {\n    \"mdmBulkUpdate\": {\n      \"total\": 2,\n      \"succeeded\": 1,\n      \"failed\": 1,\n      \"results\": [\n        { \"success\": true, \"id\": \"PM-BLK-001\", \"error\": null },\n        { \"success\": false, \"id\": \"NONEXISTENT\", \"error\": \"Not found\" }\n      ]\n    }\n  }\n}"
+            }
+          ]
+        },
+        {
+          "name": "13. Bulk Patch (Partial Update)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "x-partner-id", "value": "{{partner_id}}" },
+              { "key": "x-partner-key", "value": "{{partner_key}}" }
+            ],
+            "url": { "raw": "{{mesh_url}}", "host": ["{{mesh_url}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "mutation {\n  mdmBulkPatch(\n    master: \"{{master}}\"\n    input: {\n      data: \"[{\\\"id\\\":\\\"PM-BLK-001\\\",\\\"data\\\":{\\\"price\\\":\\\"555\\\",\\\"tags\\\":\\\"patched,sale\\\"}},{\\\"id\\\":\\\"PM-BLK-002\\\",\\\"data\\\":{\\\"price\\\":\\\"777\\\",\\\"tags\\\":\\\"patched,featured\\\"}},{\\\"id\\\":\\\"PM-BLK-003\\\",\\\"data\\\":{\\\"price\\\":\\\"333\\\",\\\"tags\\\":\\\"patched\\\"}}]\"\n    }\n  ) {\n    master\n    operation\n    total\n    succeeded\n    failed\n    results {\n      success\n      id\n      error\n    }\n  }\n}",
+                "variables": ""
+              }
+            },
+            "description": "## Bulk Patch — Partial Update Multiple Records\n\nMerge fields into multiple existing records. Only the specified fields are changed — all other fields are preserved.\n\n### Parameters\n\n| Parameter | Type | Required | Description |\n|-----------|------|----------|-------------|\n| `master` | String | **Yes** | Master/entity name |\n| `input.data` | String | **Yes** | JSON string of array of `{ id, data }` objects |\n\n### Data Format\n\n```json\n[\n  { \"id\": \"PM-BLK-001\", \"data\": { \"price\": \"555\", \"tags\": \"patched,sale\" } },\n  { \"id\": \"PM-BLK-002\", \"data\": { \"price\": \"777\", \"tags\": \"patched,featured\" } },\n  { \"id\": \"PM-BLK-003\", \"data\": { \"price\": \"333\", \"tags\": \"patched\" } }\n]\n```\n\n### How It Works\n\nFor each item:\n1. Fetch existing record by `id`\n2. Merge: `{ ...existingData, ...patchData }`\n3. Validate merged result against schema (if configured)\n4. Save merged data\n\n### Bulk Patch vs Bulk Update\n\n| | Bulk Update | Bulk Patch |\n|---|---|---|\n| `data` contains | **Complete** record | **Only changed** fields |\n| Missing fields | Removed | Preserved |\n| Best for | Full replacements | Changing 1-2 fields across many records |\n\n### Example Response\n\n```json\n{\n  \"data\": {\n    \"mdmBulkPatch\": {\n      \"master\": \"productcatalog\",\n      \"operation\": \"bulkPatch\",\n      \"total\": 3,\n      \"succeeded\": 3,\n      \"failed\": 0,\n      \"results\": [\n        { \"success\": true, \"id\": \"PM-BLK-001\", \"error\": null },\n        { \"success\": true, \"id\": \"PM-BLK-002\", \"error\": null },\n        { \"success\": true, \"id\": \"PM-BLK-003\", \"error\": null }\n      ]\n    }\n  }\n}\n```"
+          },
+          "response": [
+            {
+              "name": "200 — All Patched",
+              "status": "OK",
+              "code": 200,
+              "header": [
+                { "key": "Content-Type", "value": "application/json" },
+                { "key": "Cache-Control", "value": "no-store" }
+              ],
+              "body": "{\n  \"data\": {\n    \"mdmBulkPatch\": {\n      \"master\": \"productcatalog\",\n      \"operation\": \"bulkPatch\",\n      \"total\": 3,\n      \"succeeded\": 3,\n      \"failed\": 0,\n      \"results\": [\n        { \"success\": true, \"id\": \"PM-BLK-001\", \"error\": null },\n        { \"success\": true, \"id\": \"PM-BLK-002\", \"error\": null },\n        { \"success\": true, \"id\": \"PM-BLK-003\", \"error\": null }\n      ]\n    }\n  }\n}"
+            }
+          ]
+        },
+        {
+          "name": "14. Bulk Delete",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "x-partner-id", "value": "{{partner_id}}" },
+              { "key": "x-partner-key", "value": "{{partner_key}}" }
+            ],
+            "url": { "raw": "{{mesh_url}}", "host": ["{{mesh_url}}"] },
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "mutation {\n  mdmBulkDelete(\n    master: \"{{master}}\"\n    input: {\n      data: \"[\\\"PM-BLK-001\\\",\\\"PM-BLK-002\\\",\\\"PM-BLK-003\\\"]\"\n    }\n  ) {\n    master\n    operation\n    total\n    succeeded\n    failed\n    results {\n      success\n      id\n      error\n    }\n  }\n}",
+                "variables": ""
+              }
+            },
+            "description": "## Bulk Delete — Soft Delete Multiple Records\n\nSoft-delete multiple records in a single request. Each record is marked as `deleted: true`.\n\n### Parameters\n\n| Parameter | Type | Required | Description |\n|-----------|------|----------|-------------|\n| `master` | String | **Yes** | Master/entity name |\n| `input.data` | String | **Yes** | JSON string of an **array of primary key strings** |\n\n### Data Format\n\nUnlike other bulk operations, the data is simply an array of ID strings:\n\n```json\n[\"PM-BLK-001\", \"PM-BLK-002\", \"PM-BLK-003\"]\n```\n\nStringified and escaped:\n```\ndata: \"[\\\"PM-BLK-001\\\",\\\"PM-BLK-002\\\",\\\"PM-BLK-003\\\"]\"\n```\n\n### Behavior\n\n- Records are soft-deleted with `deletedAt` timestamp and `deletedBy` partner info\n- Already-deleted or nonexistent IDs return individual `Not found` errors\n- Active record count on the master is updated\n- An audit log entry is created summarizing the batch\n\n### Example Response — All Succeed\n\n```json\n{\n  \"data\": {\n    \"mdmBulkDelete\": {\n      \"master\": \"productcatalog\",\n      \"operation\": \"bulkDelete\",\n      \"total\": 3,\n      \"succeeded\": 3,\n      \"failed\": 0,\n      \"results\": [\n        { \"success\": true, \"id\": \"PM-BLK-001\", \"error\": null },\n        { \"success\": true, \"id\": \"PM-BLK-002\", \"error\": null },\n        { \"success\": true, \"id\": \"PM-BLK-003\", \"error\": null }\n      ]\n    }\n  }\n}\n```\n\n### Example Response — Partial Failure\n\n```json\n{\n  \"data\": {\n    \"mdmBulkDelete\": {\n      \"total\": 3,\n      \"succeeded\": 1,\n      \"failed\": 2,\n      \"results\": [\n        { \"success\": true, \"id\": \"PM-BLK-001\", \"error\": null },\n        { \"success\": false, \"id\": \"PM-BLK-002\", \"error\": \"Not found\" },\n        { \"success\": false, \"id\": \"NONEXISTENT\", \"error\": \"Not found\" }\n      ]\n    }\n  }\n}\n```\n\n### Tip: Full Workflow Test\n\nRun requests in this order to test the full lifecycle:\n1. **Bulk Create** (11) → creates PM-BLK-001, 002, 003\n2. **Bulk Fetch** (5) → verify they exist\n3. **Bulk Patch** (13) → update prices and tags\n4. **Bulk Fetch** (5) → verify changes\n5. **Bulk Delete** (14) → clean up\n6. **Bulk Fetch** (5) → verify they're in `notFound`"
+          },
+          "response": [
+            {
+              "name": "200 — All Deleted",
+              "status": "OK",
+              "code": 200,
+              "header": [
+                { "key": "Content-Type", "value": "application/json" },
+                { "key": "Cache-Control", "value": "no-store" }
+              ],
+              "body": "{\n  \"data\": {\n    \"mdmBulkDelete\": {\n      \"master\": \"productcatalog\",\n      \"operation\": \"bulkDelete\",\n      \"total\": 3,\n      \"succeeded\": 3,\n      \"failed\": 0,\n      \"results\": [\n        { \"success\": true, \"id\": \"PM-BLK-001\", \"error\": null },\n        { \"success\": true, \"id\": \"PM-BLK-002\", \"error\": null },\n        { \"success\": true, \"id\": \"PM-BLK-003\", \"error\": null }\n      ]\n    }\n  }\n}"
+            },
+            {
+              "name": "200 — Partial Failure",
+              "status": "OK",
+              "code": 200,
+              "header": [
+                { "key": "Content-Type", "value": "application/json" }
+              ],
+              "body": "{\n  \"data\": {\n    \"mdmBulkDelete\": {\n      \"total\": 3,\n      \"succeeded\": 1,\n      \"failed\": 2,\n      \"results\": [\n        { \"success\": true, \"id\": \"PM-BLK-001\", \"error\": null },\n        { \"success\": false, \"id\": \"ALREADY-DELETED\", \"error\": \"Not found\" },\n        { \"success\": false, \"id\": \"NONEXISTENT\", \"error\": \"Not found\" }\n      ]\n    }\n  }\n}"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

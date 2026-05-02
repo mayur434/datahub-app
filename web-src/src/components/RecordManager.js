@@ -1,19 +1,21 @@
-import React, { useState, useEffect, useMemo } from 'react'
+import React, { useState, useEffect, useMemo, useCallback } from 'react'
 import {
   Heading, View, Flex, Button, TextField, Text, ProgressCircle, Well,
   Picker, Item, TextArea, Divider, SearchField, StatusLight, ActionButton,
   DialogTrigger, Dialog, AlertDialog, Content, ButtonGroup, Checkbox
 } from '@adobe/react-spectrum'
 import { useParams, useNavigate } from 'react-router-dom'
-import { queryData, createRecord, patchRecord, deleteRecord, fetchFileDetail, fullUpdate, deltaUpdate } from './actionInvoker'
+import { queryData, createRecord, patchRecord, deleteRecord, fetchFileDetail, fullUpdate, deltaUpdate, invokeAction } from './actionInvoker'
 import { useNotifications } from './NotificationProvider'
+import { clearSwrCache } from './useSwrCache'
+import { useDebounce } from './useDebounce'
 import Add from '@spectrum-icons/workflow/Add'
 import Download from '@spectrum-icons/workflow/Download'
 import UploadToCloud from '@spectrum-icons/workflow/UploadToCloud'
 import Refresh from '@spectrum-icons/workflow/Refresh'
 
 function RecordManager ({ runtime, ims }) {
-  const { entity } = useParams()
+  const { master } = useParams()
   const navigate = useNavigate()
   const notify = useNotifications()
   const [file, setFile] = useState(null)
@@ -23,6 +25,17 @@ function RecordManager ({ runtime, ims }) {
   const [page, setPage] = useState(1)
   const [total, setTotal] = useState(0)
   const [pageSize, setPageSize] = useState(25)
+
+  // Load default page size from settings on mount
+  useEffect(() => {
+    (async () => {
+      try {
+        const result = await invokeAction('app-settings', {}, ims, 'GET')
+        const defaultPs = result?.settings?.api?.defaultPageSize
+        if (defaultPs) setPageSize(defaultPs)
+      } catch (_) { /* keep default */ }
+    })()
+  }, [])
 
   // Create/Edit form
   const [showCreateForm, setShowCreateForm] = useState(false)
@@ -53,13 +66,13 @@ function RecordManager ({ runtime, ims }) {
 
   useEffect(() => {
     loadData()
-  }, [entity, page, pageSize, sortField, sortDir])
+  }, [master, page, pageSize, sortField, sortDir])
 
   async function loadData () {
     try {
       setLoading(true)
       setRefreshing(true)
-      const fileResult = await fetchFileDetail(entity, ims)
+      const fileResult = await fetchFileDetail(master, ims)
       setFile(fileResult.file)
 
       const queryParams = { page, pageSize }
@@ -71,7 +84,7 @@ function RecordManager ({ runtime, ims }) {
         queryParams.order = sortDir
       }
 
-      const dataResult = await queryData(entity, queryParams, ims)
+      const dataResult = await queryData(master, queryParams, ims)
       setRecords(dataResult.data || [])
       setTotal(dataResult.total || 0)
       setError(null)
@@ -86,8 +99,10 @@ function RecordManager ({ runtime, ims }) {
   async function handleCreate () {
     try {
       setCreating(true)
-      await createRecord(entity, formData, ims)
+      await createRecord(master, formData, ims)
       notify.success('Record created successfully')
+      clearSwrCache('dashboard')
+      clearSwrCache('file-list')
       setShowCreateForm(false)
       setFormData({})
       await loadData()
@@ -102,7 +117,20 @@ function RecordManager ({ runtime, ims }) {
     try {
       setEditing(true)
       const pk = editingRecord[file.primaryKey]
-      await patchRecord(entity, pk, formData, ims)
+      // Only send editable schema fields that actually changed
+      const editableFields = (file.schema || []).filter(f => f.editable).map(f => f.name)
+      const changedData = {}
+      editableFields.forEach(field => {
+        if (String(formData[field] ?? '') !== String(editingRecord[field] ?? '')) {
+          changedData[field] = formData[field]
+        }
+      })
+      if (Object.keys(changedData).length === 0) {
+        notify.info('No changes detected')
+        setEditing(false)
+        return
+      }
+      await patchRecord(master, pk, changedData, ims)
       notify.success('Record updated successfully')
       setEditingRecord(null)
       setFormData({})
@@ -118,8 +146,10 @@ function RecordManager ({ runtime, ims }) {
     const pk = record[file.primaryKey]
     try {
       setDeleting(pk)
-      await deleteRecord(entity, pk, ims)
+      await deleteRecord(master, pk, ims)
       notify.success('Record deleted')
+      clearSwrCache('dashboard')
+      clearSwrCache('file-list')
       await loadData()
     } catch (e) {
       notify.error(`Delete failed: ${e.message}`)
@@ -133,11 +163,12 @@ function RecordManager ({ runtime, ims }) {
       setBulkUploading(true)
       let result
       if (bulkMode === 'full-update') {
-        result = await fullUpdate(entity, bulkCsvContent, ims)
+        result = await fullUpdate(master, bulkCsvContent, ims)
       } else {
-        result = await deltaUpdate(entity, bulkCsvContent, bulkMode, ims)
+        result = await deltaUpdate(master, bulkCsvContent, bulkMode, ims)
       }
       notify.success(`Bulk operation complete: ${result.message || 'Success'}`)
+      clearSwrCache()
       setShowBulkUpload(false)
       setBulkCsvContent('')
       await loadData()
@@ -171,6 +202,10 @@ function RecordManager ({ runtime, ims }) {
     if (file && file.schema) {
       file.schema.forEach(f => { emptyData[f.name] = '' })
     }
+    // Auto-generate primary key
+    if (file?.primaryKey) {
+      emptyData[file.primaryKey] = crypto.randomUUID()
+    }
     setFormData(emptyData)
   }
 
@@ -196,11 +231,13 @@ function RecordManager ({ runtime, ims }) {
     }
   }
 
+  const SYSTEM_FIELDS = ['createdAt', 'updatedAt', 'createdBy', 'updatedBy']
+
   function exportCSV () {
     if (!records.length || !file?.schema) return
-    const headers = file.schema.map(f => f.name)
+    const headers = [...file.schema.map(f => f.name), ...SYSTEM_FIELDS]
     const rows = records.map(r => headers.map(h => {
-      const val = r[h] || ''
+      const val = SYSTEM_FIELDS.includes(h) ? (r._systemFields?.[h] || '') : (r[h] || '')
       return val.toString().includes(',') ? `"${val}"` : val
     }).join(','))
     const csv = [headers.join(','), ...rows].join('\n')
@@ -208,7 +245,7 @@ function RecordManager ({ runtime, ims }) {
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `${entity}-export-page${page}.csv`
+    a.download = `${master}-export-page${page}.csv`
     a.click()
     URL.revokeObjectURL(url)
     notify.info('CSV exported')
@@ -219,7 +256,7 @@ function RecordManager ({ runtime, ims }) {
     if (!searchTerm) return records
     const term = searchTerm.toLowerCase()
     return records.filter(r =>
-      Object.values(r).some(v => String(v).toLowerCase().includes(term))
+      Object.entries(r).filter(([k]) => k !== '_systemFields').some(([, v]) => String(v).toLowerCase().includes(term))
     )
   }, [records, searchTerm])
 
@@ -242,7 +279,7 @@ function RecordManager ({ runtime, ims }) {
       <Flex justifyContent='space-between' alignItems='start' marginBottom='size-300'>
         <View>
           <Heading level={1} UNSAFE_className='mdm-page__title'>
-            Records: {file?.displayName || entity}
+            Records: {file?.displayName || master}
           </Heading>
           <Text UNSAFE_className='mdm-page__subtitle'>
             {total} total records • Page {page} of {totalPages || 1}
@@ -346,7 +383,7 @@ function RecordManager ({ runtime, ims }) {
             <ActionButton isQuiet onPress={() => { setShowCreateForm(false); setEditingRecord(null); setFormData({}) }}>✕</ActionButton>
           </Flex>
           <div className='mdm-form-grid'>
-            {file?.schema?.map(field => (
+            {file?.schema?.filter(field => !(showCreateForm && field.name === file?.primaryKey) && !SYSTEM_FIELDS.includes(field.name)).map(field => (
               <TextField
                 key={field.name}
                 label={field.name}
@@ -395,6 +432,11 @@ function RecordManager ({ runtime, ims }) {
                     )}
                   </th>
                 ))}
+                {SYSTEM_FIELDS.map(sf => (
+                  <th key={sf} className='mdm-table__system-col'>
+                    <span className='mdm-text-muted'>{sf}</span>
+                  </th>
+                ))}
                 {file?.crudEnabled && <th className='mdm-table__actions-col'>Actions</th>}
               </tr>
             </thead>
@@ -406,6 +448,16 @@ function RecordManager ({ runtime, ims }) {
                       <span className='mdm-cell-value' title={String(record[field.name] || '')}>
                         {record[field.name] !== undefined && record[field.name] !== null
                           ? String(record[field.name])
+                          : <span className='mdm-text-muted'>—</span>
+                        }
+                      </span>
+                    </td>
+                  ))}
+                  {SYSTEM_FIELDS.map(sf => (
+                    <td key={sf} className='mdm-table__system-col'>
+                      <span className='mdm-cell-value mdm-text-muted' title={record._systemFields?.[sf] || ''}>
+                        {record._systemFields?.[sf]
+                          ? sf.endsWith('At') ? new Date(record._systemFields[sf]).toLocaleString() : record._systemFields[sf]
                           : <span className='mdm-text-muted'>—</span>
                         }
                       </span>

@@ -1,5 +1,5 @@
 {
-  "entity": "product",
+  "master": "product",
   "facetsEnabled": true,
   "totalFields": 6,
   "facetableFields": 2,

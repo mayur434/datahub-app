@@ -1,8 +1,8 @@
 {
   "type": "object",
   "properties": {
-    "entity": { "type": "string" },
+    "master": { "type": "string" },
     "data": {}
   },
-  "required": ["entity", "data"]
+  "required": ["master", "data"]
 }

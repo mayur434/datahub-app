@@ -5,37 +5,30 @@ import {
 } from '@adobe/react-spectrum'
 import { useNavigate } from 'react-router-dom'
 import { fetchDashboard, fetchFileList } from './actionInvoker'
+import useSwrCache from './useSwrCache'
 import Refresh from '@spectrum-icons/workflow/Refresh'
 import Add from '@spectrum-icons/workflow/Add'
 
 function Dashboard ({ runtime, ims }) {
   const navigate = useNavigate()
-  const [stats, setStats] = useState(null)
-  const [files, setFiles] = useState([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState(null)
-  const [lastRefresh, setLastRefresh] = useState(null)
 
-  useEffect(() => {
-    loadDashboard()
-  }, [])
+  // SWR cache for dashboard data — show stale instantly, revalidate in background
+  const dashSwr = useSwrCache('dashboard', () => fetchDashboard(ims).catch(() => ({})), { ttl: 2 * 60 * 1000 })
+  const filesSwr = useSwrCache('file-list', () => fetchFileList(ims).then(r => r.files || []).catch(() => []), { ttl: 2 * 60 * 1000 })
 
-  async function loadDashboard () {
-    try {
-      setLoading(true)
-      const [dashResult, filesResult] = await Promise.all([
-        fetchDashboard(ims).catch(() => ({})),
-        fetchFileList(ims).catch(() => ({ files: [] }))
-      ])
-      setStats(dashResult.dashboard || dashResult)
-      setFiles(filesResult.files || [])
-      setLastRefresh(new Date())
-      setError(null)
-    } catch (e) {
-      setError(e.message)
-    } finally {
-      setLoading(false)
-    }
+  const stats = dashSwr.data ? (dashSwr.data.dashboard || dashSwr.data) : null
+  const files = Array.isArray(filesSwr.data) ? filesSwr.data : (filesSwr.data?.files || [])
+  const loading = dashSwr.loading && !dashSwr.data
+  const error = dashSwr.error && !dashSwr.data ? dashSwr.error : null
+  const isCached = !!dashSwr.data?._cached
+  const cachedAt = dashSwr.data?._cachedAt || null
+  const stale = dashSwr.stale || filesSwr.stale
+
+  async function refreshDashboard () {
+    await Promise.all([
+      dashSwr.refresh(),
+      filesSwr.refresh()
+    ])
   }
 
   if (loading && !stats) {
@@ -56,7 +49,7 @@ function Dashboard ({ runtime, ims }) {
           <div className='mdm-empty-state__icon'>⚠</div>
           <Heading level={2}>Unable to load dashboard</Heading>
           <Text>{error}</Text>
-          <Button variant='primary' marginTop='size-200' onPress={loadDashboard}>Retry</Button>
+          <Button variant='primary' marginTop='size-200' onPress={refreshDashboard}>Retry</Button>
         </div>
       </View>
     )
@@ -81,13 +74,19 @@ function Dashboard ({ runtime, ims }) {
           <Heading level={1} UNSAFE_className='mdm-page__title'>Dashboard</Heading>
           <Text UNSAFE_className='mdm-page__subtitle'>
             Platform overview and key metrics
-            {lastRefresh && ` \u2022 Updated ${lastRefresh.toLocaleTimeString()}`}
+            {cachedAt && (
+              <span style={{ marginLeft: 8, fontSize: '0.85em', opacity: 0.7 }}>
+                {stale ? '\u23F3 Updating...' : isCached ? '\u26A1 Cached' : '\u2705 Live'}
+                {' \u2022 '}
+                {new Date(cachedAt).toLocaleTimeString()}
+              </span>
+            )}
           </Text>
         </View>
         <Flex gap='size-100'>
-          <ActionButton onPress={loadDashboard} isQuiet>
+          <ActionButton onPress={refreshDashboard} isQuiet isDisabled={loading}>
             <Refresh />
-            <Text>Refresh</Text>
+            <Text>{loading ? 'Refreshing...' : 'Refresh'}</Text>
           </ActionButton>
           <Button variant='accent' onPress={() => navigate('/upload')}>
             <Add />
@@ -99,7 +98,7 @@ function Dashboard ({ runtime, ims }) {
       {/* KPI Cards */}
       <Grid columns={['1fr', '1fr', '1fr', '1fr']} gap='size-200' marginBottom='size-400'>
         <KPICard
-          title='Entities'
+          title='Masters'
           value={files.length}
           subtitle={`${publicCount} public \u2022 ${privateCount} private`}
           color='blue'
@@ -107,7 +106,7 @@ function Dashboard ({ runtime, ims }) {
         <KPICard
           title='Total Records'
           value={totalRecords.toLocaleString()}
-          subtitle='Across all entities'
+          subtitle='Across all masters'
           color='green'
         />
         <KPICard
@@ -124,19 +123,19 @@ function Dashboard ({ runtime, ims }) {
         />
       </Grid>
 
-      {/* Entity Health & Activity */}
+      {/* Master Health & Activity */}
       <Grid columns={['2fr', '1fr']} gap='size-300' marginBottom='size-400'>
         {/* Entities Table */}
         <View UNSAFE_className='mdm-card'>
           <Flex justifyContent='space-between' alignItems='center' marginBottom='size-200'>
-            <Heading level={3}>Entity Overview</Heading>
-            <Button variant='secondary' isQuiet onPress={() => navigate('/files')}>
+            <Heading level={3}>Master Overview</Heading>
+            <Button variant='secondary' isQuiet onPress={() => navigate('/masters')}>
               <Text>View All</Text>
             </Button>
           </Flex>
           {files.length === 0 ? (
             <div className='mdm-empty-state mdm-empty-state--compact'>
-              <Text>No entities registered yet. Import your first dataset to get started.</Text>
+              <Text>No masters registered yet. Import your first dataset to get started.</Text>
               <Button variant='primary' marginTop='size-100' onPress={() => navigate('/upload')}>
                 Import First Dataset
               </Button>
@@ -145,7 +144,7 @@ function Dashboard ({ runtime, ims }) {
             <table className='mdm-table mdm-table--compact'>
               <thead>
                 <tr>
-                  <th>Entity</th>
+                  <th>Master</th>
                   <th>Records</th>
                   <th>Visibility</th>
                   <th>Status</th>
@@ -153,11 +152,11 @@ function Dashboard ({ runtime, ims }) {
               </thead>
               <tbody>
                 {files.slice(0, 8).map(file => (
-                  <tr key={file.entityName} className='mdm-table__clickable-row' onClick={() => navigate(`/files/${file.entityName}`)}>
+                  <tr key={file.masterName || file.entityName} className='mdm-table__clickable-row' onClick={() => navigate(`/masters/${file.masterName || file.entityName}`)}>
                     <td>
                       <div className='mdm-entity-cell'>
                         <strong>{file.displayName}</strong>
-                        <span className='mdm-entity-cell__sub'>{file.entityName}</span>
+                        <span className='mdm-entity-cell__sub'>{file.masterName || file.entityName}</span>
                       </div>
                     </td>
                     <td>{(file.recordCount || 0).toLocaleString()}</td>
@@ -215,7 +214,7 @@ function Dashboard ({ runtime, ims }) {
                 <div className={`mdm-activity-timeline__dot mdm-activity-timeline__dot--${log.status === 'success' ? 'success' : 'error'}`} />
                 <div className='mdm-activity-timeline__content'>
                   <Text UNSAFE_className='mdm-activity-timeline__action'>
-                    <strong>{log.operation}</strong> on <em>{log.entityName}</em>
+                    <strong>{log.operation}</strong> on <em>{log.masterName || log.entityName}</em>
                   </Text>
                   <Text UNSAFE_className='mdm-activity-timeline__meta'>
                     {log.user} • {log.timestamp ? new Date(log.timestamp).toLocaleString() : ''}

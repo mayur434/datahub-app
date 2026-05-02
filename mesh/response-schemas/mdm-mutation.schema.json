@@ -1,0 +1,21 @@
+{
+  "type": "object",
+  "properties": {
+    "success": {
+      "type": "boolean"
+    },
+    "master": {
+      "type": "string"
+    },
+    "operation": {
+      "type": "string"
+    },
+    "record": {},
+    "id": {
+      "type": "string"
+    },
+    "error": {
+      "type": "string"
+    }
+  }
+}

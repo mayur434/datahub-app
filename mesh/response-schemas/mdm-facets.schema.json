@@ -1,7 +1,7 @@
 {
   "type": "object",
   "properties": {
-    "entity": { "type": "string" },
+    "master": { "type": "string" },
     "facetsEnabled": { "type": "boolean" },
     "totalFields": { "type": "integer" },
     "facetableFields": { "type": "integer" },
@@ -37,5 +37,5 @@
     },
     "totalRecords": { "type": "integer" }
   },
-  "required": ["entity", "facetsEnabled", "facets"]
+  "required": ["master", "facetsEnabled", "facets"]
 }

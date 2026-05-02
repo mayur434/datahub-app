@@ -14,26 +14,7 @@
  */
 
 const { Core } = require('@adobe/aio-sdk')
-const libDb = require('@adobe/aio-lib-db')
-
-// ============ DB Connection ============
-
-async function getDbClient (params) {
-  const { generateAccessToken } = Core.AuthClient
-  const token = await generateAccessToken(params)
-  const region = process.env.AIO_DB_REGION || 'apac'
-  const db = await libDb.init({ token: token.access_token, region })
-  return await db.connect()
-}
-
-async function safeFindOne (collection, filter) {
-  try {
-    return await collection.findOne(filter)
-  } catch (e) {
-    if (e.message && e.message.includes('Document not found')) return null
-    throw e
-  }
-}
+const { getDbClient, safeFindOne, escapeRegex, validateMasterName, getMasterCollection } = require('../mdm-utils')
 
 // ============ Main Action ============
 
@@ -44,36 +25,36 @@ async function main (params) {
 
   let client
   try {
-    const entity = params.entity
-    if (!entity) return createErrorResponse('Missing required parameter: entity', 400)
+    const entity = params.master || params.entity
+    if (!entity) return createErrorResponse('Missing required parameter: master', 400)
 
-    if (!/^[a-z][a-z0-9_-]*$/.test(entity)) {
-      return createErrorResponse('Invalid entity name', 400)
+    if (!validateMasterName(entity)) {
+      return createErrorResponse('Invalid master name', 400)
     }
 
     client = await getDbClient(params)
     const metaCol = await client.collection('metadata')
-    const metadata = await safeFindOne(metaCol, { entityName: entity })
+    const metadata = await safeFindOne(metaCol, { masterName: entity })
 
     if (!metadata || metadata.status === 'deleted') {
-      return createErrorResponse(`Entity '${entity}' not found`, 404)
+      return createErrorResponse(`Master '${entity}' not found`, 404)
     }
 
     // Visibility check
     if (metadata.visibility === 'private') {
       const authHeader = params.__ow_headers && (params.__ow_headers.authorization || params.__ow_headers['x-forwarded-authorization'])
       if (!authHeader || authHeader.length < 20) {
-        return createErrorResponse('Authentication required for private entity', 401)
+        return createErrorResponse('Authentication required for private master', 401)
       }
     }
 
     // Check if facets are configured
     if (!metadata.facets || !metadata.facets.enabled || !metadata.facets.fields || metadata.facets.fields.length === 0) {
       return createResponse({
-        entity,
+        master: entity,
         facetsEnabled: false,
         facets: [],
-        message: 'No facets configured for this entity. Configure facetable fields in the entity schema.'
+        message: 'No facets configured for this master. Configure facetable fields in the master schema.'
       })
     }
 
@@ -81,7 +62,7 @@ async function main (params) {
 
     // Build response with facet metadata
     const response = {
-      entity,
+      master: entity,
       facetsEnabled: true,
       totalFields: metadata.schema.length,
       facetableFields: facetsConfig.fields.length,
@@ -105,11 +86,11 @@ async function main (params) {
     // If values=true, compute live aggregations
     const returnValues = params.values === 'true' || params.values === '1'
     if (returnValues) {
-      const recordsCol = await client.collection('records')
+      const masterCol = await getMasterCollection(client, entity)
 
       // Build base filter + any user-applied filters
       const systemParams = [
-        'entity', 'values', 'page', 'pageSize', 'sort', 'order', 'fields', 'facets', 'filters',
+        'master', 'entity', 'values', 'page', 'pageSize', 'sort', 'order', 'fields', 'facets', 'filters',
         '__ow_method', '__ow_headers', '__ow_path', '__ow_query', '__ow_body',
         '__ims_oauth_s2s', 'LOG_LEVEL', 'apiKey'
       ]
@@ -146,9 +127,9 @@ async function main (params) {
         }
       }
 
-      // Query with entityName only — aio-lib-db does not reliably support
+      // Query per-master collection — aio-lib-db does not reliably support
       // compound filters with booleans. JS-level safety filter applied after fetch.
-      const allRecords = await recordsCol.find({ entityName: entity }).toArray()
+      const allRecords = await masterCol.find({}).toArray()
       const activeRecords = allRecords.filter(r => r.deleted !== true && r.status !== 'deleted')
       const filterKeys = Object.keys(filters)
 
@@ -207,11 +188,7 @@ async function main (params) {
   }
 }
 
-// ============ Helpers ============
-
-function escapeRegex (str) {
-  return String(str).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-}
+// ============ Response Helpers (public API uses custom cache headers) ============
 
 function createResponse (body, statusCode = 200) {
   return {

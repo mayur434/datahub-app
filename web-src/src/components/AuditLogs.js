@@ -4,7 +4,8 @@ import {
   Picker, Item, ActionButton, StatusLight
 } from '@adobe/react-spectrum'
 import { useNavigate } from 'react-router-dom'
-import { fetchAuditLogs, fetchFileList } from './actionInvoker'
+import { fetchAuditLogs, fetchFileList, invokeAction } from './actionInvoker'
+import { useDebounce } from './useDebounce'
 import Refresh from '@spectrum-icons/workflow/Refresh'
 
 function AuditLogs ({ runtime, ims }) {
@@ -16,19 +17,30 @@ function AuditLogs ({ runtime, ims }) {
   const [total, setTotal] = useState(0)
 
   // Filters
-  const [filterEntity, setFilterEntity] = useState('')
+  const [filterMaster, setFilterMaster] = useState('')
   const [filterUser, setFilterUser] = useState('')
   const [filterAction, setFilterAction] = useState('')
   const [page, setPage] = useState(1)
-  const pageSize = 25
+  const [pageSize, setPageSize] = useState(25)
+
+  // Debounce text filters to avoid excessive API calls
+  const debouncedUser = useDebounce(filterUser, 400)
 
   useEffect(() => {
     loadEntities()
+    // Load default page size from settings
+    ;(async () => {
+      try {
+        const r = await invokeAction('app-settings', {}, ims, 'GET')
+        const defaultPs = r?.settings?.api?.defaultPageSize
+        if (defaultPs) setPageSize(defaultPs)
+      } catch (_) { /* keep default */ }
+    })()
   }, [])
 
   useEffect(() => {
     loadLogs()
-  }, [filterEntity, filterUser, filterAction, page])
+  }, [filterMaster, debouncedUser, filterAction, page])
 
   async function loadEntities () {
     try {
@@ -43,7 +55,7 @@ function AuditLogs ({ runtime, ims }) {
     try {
       setLoading(true)
       const filters = {}
-      if (filterEntity) filters.entity = filterEntity
+      if (filterMaster) filters.master = filterMaster
       if (filterUser) filters.user = filterUser
       if (filterAction) filters.action = filterAction
       filters.page = page
@@ -61,7 +73,7 @@ function AuditLogs ({ runtime, ims }) {
   }
 
   function handleClearFilters () {
-    setFilterEntity('')
+    setFilterMaster('')
     setFilterUser('')
     setFilterAction('')
     setPage(1)
@@ -90,9 +102,9 @@ function AuditLogs ({ runtime, ims }) {
       {/* Filters */}
       <View UNSAFE_className='mdm-toolbar' marginBottom='size-200'>
         <Flex gap='size-200' alignItems='end' wrap>
-          <Picker label='Entity' selectedKey={filterEntity} onSelectionChange={setFilterEntity} width='size-2000'>
-            <Item key=''>All Entities</Item>
-            {entities.map(e => <Item key={e.entity}>{e.displayName || e.entity}</Item>)}
+          <Picker label='Master' selectedKey={filterMaster} onSelectionChange={setFilterMaster} width='size-2000'>
+            <Item key=''>All Masters</Item>
+            {entities.map(e => <Item key={e.masterName || e.entity}>{e.displayName || e.masterName || e.entity}</Item>)}
           </Picker>
           <TextField label='User' value={filterUser} onChange={setFilterUser} placeholder='email' width='size-2400' />
           <Picker label='Action' selectedKey={filterAction} onSelectionChange={setFilterAction} width='size-2000'>
@@ -129,7 +141,7 @@ function AuditLogs ({ runtime, ims }) {
               <thead>
                 <tr>
                   <th>Timestamp</th>
-                  <th>Entity</th>
+                  <th>Master</th>
                   <th>Action</th>
                   <th>User</th>
                   <th>Details</th>
@@ -140,8 +152,8 @@ function AuditLogs ({ runtime, ims }) {
                   <tr key={log.id}>
                     <td><Text UNSAFE_className='mdm-text-muted'>{log.timestamp ? new Date(log.timestamp).toLocaleString() : '-'}</Text></td>
                     <td>
-                      <button className='mdm-entity-cell__link' onClick={() => navigate(`/files/${log.entity}`)}>
-                        {log.entity}
+                      <button className='mdm-entity-cell__link' onClick={() => navigate(`/masters/${log.master || log.entity}`)}>
+                        {log.master || log.entity}
                       </button>
                     </td>
                     <td><code className='mdm-code-inline'>{log.action}</code></td>

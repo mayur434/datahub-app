@@ -12,7 +12,7 @@ import Delete from '@spectrum-icons/workflow/Delete'
 import Settings from '@spectrum-icons/workflow/Settings'
 
 function ArchiveManager ({ runtime, ims }) {
-  const { entity } = useParams()
+  const { master } = useParams()
   const navigate = useNavigate()
   const notify = useNotifications()
 
@@ -37,14 +37,14 @@ function ArchiveManager ({ runtime, ims }) {
 
   useEffect(() => {
     loadData()
-  }, [entity, page])
+  }, [master, page])
 
   async function loadData () {
     try {
       setLoading(true)
       const [archiveResult, configResult] = await Promise.all([
-        invokeAction('archive-list', { entity, page, pageSize: 20 }, ims, 'GET'),
-        invokeAction('archive-config', { entity }, ims, 'GET')
+        invokeAction('archive-list', { master, page, pageSize: 20 }, ims, 'GET'),
+        invokeAction('archive-config', { master }, ims, 'GET')
       ])
 
       setArchives(archiveResult.archives || [])
@@ -72,7 +72,7 @@ function ArchiveManager ({ runtime, ims }) {
     try {
       setSavingConfig(true)
       await invokeAction('archive-config', {
-        entity,
+        master,
         archival: {
           enabled: cfgEnabled,
           threshold: cfgThreshold,
@@ -95,11 +95,11 @@ function ArchiveManager ({ runtime, ims }) {
   async function handleRunNow () {
     try {
       setArchiving(true)
-      const result = await invokeAction('archive-run', { entity }, ims, 'POST')
+      const result = await invokeAction('archive-run', { master }, ims, 'POST')
       if (result.archived > 0) {
-        notify.success(`Archived ${result.recordsArchived} records from ${result.archived} entity/entities`)
+        notify.success(`Archived ${result.recordsArchived} records from ${result.archived} master(s)`)
       } else {
-        notify.info('No entities exceeded their archive threshold')
+        notify.info('No masters exceeded their archive threshold')
       }
       await loadData()
     } catch (e) {
@@ -140,19 +140,19 @@ function ArchiveManager ({ runtime, ims }) {
       <Flex justifyContent='space-between' alignItems='center' marginBottom='size-300'>
         <View>
           <Heading level={1} UNSAFE_className='mdm-page__title'>
-            Archives{entity ? `: ${config?.displayName || entity}` : ''}
+            Archives{master ? `: ${config?.displayName || master}` : ''}
           </Heading>
           <Text UNSAFE_className='mdm-page__subtitle'>
-            {entity
-              ? `Manage backups and archival for this entity • ${config?.recordCount?.toLocaleString() || 0} current records`
-              : 'View all entity archives and backups'
+            {master
+              ? `Manage backups and archival for this master • ${config?.recordCount?.toLocaleString() || 0} current records`
+              : 'View all master archives and backups'
             }
           </Text>
         </View>
         <Flex gap='size-100'>
-          {entity && (
-            <Button variant='secondary' onPress={() => navigate(`/files/${entity}`)}>
-              Back to Entity
+          {master && (
+            <Button variant='secondary' onPress={() => navigate(`/masters/${master}`)}>
+              Back to Master
             </Button>
           )}
           <Button variant='secondary' onPress={() => setShowConfig(!showConfig)}>
@@ -176,14 +176,14 @@ function ArchiveManager ({ runtime, ims }) {
         <View UNSAFE_className='mdm-card' marginBottom='size-300'>
           <Heading level={3} marginBottom='size-200'>Archival Configuration</Heading>
           <Text UNSAFE_className='mdm-text-muted' marginBottom='size-200'>
-            Configure when this entity's records should be archived.
+            Configure when this master's records should be archived.
             When record count exceeds the threshold, oldest records are exported to file storage and removed from the database.
           </Text>
           <Divider marginBottom='size-200' />
 
           <Flex direction='column' gap='size-200'>
             <Switch isSelected={cfgEnabled} onChange={setCfgEnabled}>
-              Enable automatic archival for this entity
+              Enable automatic archival for this master
             </Switch>
 
             <Flex gap='size-300' wrap>
@@ -276,7 +276,7 @@ function ArchiveManager ({ runtime, ims }) {
           <div className='mdm-empty-state'>
             <div className='mdm-empty-state__icon'>📦</div>
             <Heading level={3}>No Archives Yet</Heading>
-            <Text>Archives will appear here when entity records exceed the configured threshold.</Text>
+            <Text>Archives will appear here when master records exceed the configured threshold.</Text>
             {!cfgEnabled && (
               <Button variant='primary' marginTop='size-200' onPress={() => setShowConfig(true)}>
                 Enable Archival
@@ -290,7 +290,7 @@ function ArchiveManager ({ runtime, ims }) {
             <thead>
               <tr>
                 <th>Archive</th>
-                {!entity && <th>Entity</th>}
+                {!master && <th>Master</th>}
                 <th>Records</th>
                 <th>Size</th>
                 <th>Archived On</th>
@@ -310,11 +310,11 @@ function ArchiveManager ({ runtime, ims }) {
                       </Text>
                     </div>
                   </td>
-                  {!entity && (
+                  {!master && (
                     <td>
                       <button className='mdm-entity-cell__link'
-                        onClick={() => navigate(`/files/${archive.entityName}/archives`)}>
-                        {archive.entityDisplayName || archive.entityName}
+                        onClick={() => navigate(`/masters/${archive.masterName}/archives`)}>
+                        {archive.masterDisplayName || archive.masterName}
                       </button>
                     </td>
                   )}

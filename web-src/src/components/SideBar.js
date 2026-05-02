@@ -10,6 +10,8 @@ import Data from '@spectrum-icons/workflow/Data'
 import Settings from '@spectrum-icons/workflow/Settings'
 import Archive from '@spectrum-icons/workflow/Archive'
 import Help from '@spectrum-icons/workflow/Help'
+import GraphBarVertical from '@spectrum-icons/workflow/GraphBarVertical'
+import UserGroup from '@spectrum-icons/workflow/UserGroup'
 
 function SideBar () {
   return (
@@ -39,7 +41,7 @@ function SideBar () {
         <div className='mdm-sidebar__section'>
           <span className='mdm-sidebar__section-label'>Data Management</span>
           <ul className='SideNav'>
-            <SideNavItem to='/files' icon={<FolderOpen size='S' />} label='Entities' />
+            <SideNavItem to='/masters' icon={<FolderOpen size='S' />} label='Masters' />
             <SideNavItem to='/upload' icon={<FileAdd size='S' />} label='Import Data' />
           </ul>
         </div>
@@ -55,6 +57,8 @@ function SideBar () {
           <span className='mdm-sidebar__section-label'>Administration</span>
           <ul className='SideNav'>
             <SideNavItem to='/audit' icon={<Clock size='S' />} label='Activity Log' />
+            <SideNavItem to='/partners' icon={<UserGroup size='S' />} label='Partners' />
+            <SideNavItem to='/admin' icon={<GraphBarVertical size='S' />} label='Admin Console' />
             <SideNavItem to='/settings' icon={<Settings size='S' />} label='Settings' />
           </ul>
         </div>

@@ -1,24 +1,24 @@
 """
 AEM MDM - API Mesh Common Schema
 
-This schema is ENTITY-AGNOSTIC. The same schema serves all master data entities.
-No changes required when a new CSV/entity is uploaded.
+This schema is MASTER-AGNOSTIC. The same schema serves all master data files.
+No changes required when a new CSV/master is uploaded.
 
 The `data` field returns opaque JSON objects (JSON scalar) whose shape depends
-on the entity's schema. Consumers query `data` without specifying sub-fields.
+on the master's schema. Consumers query `data` without specifying sub-fields.
 Use the `fields` argument to select specific columns if needed.
 
-Filters are passed as query params that map to the entity's queryable columns.
+Filters are passed as query params that map to the master's queryable columns.
 
 Usage examples:
   # Query all records — data comes back as raw JSON
-  { mdmQuery(entity: "exportdata", page: 1, pageSize: 25) { entity count total data } }
+  { mdmQuery(master: "exportdata", page: 1, pageSize: 25) { master count total data } }
 
   # Filter by specific field
-  { mdmQuery(entity: "product", filters: "{\"brand\":\"Nike\"}") { entity total data } }
+  { mdmQuery(master: "product", filters: "{\"brand\":\"Nike\"}") { master total data } }
 
   # Single record lookup
-  { mdmRecord(entity: "product", id: "ABC123") { entity data } }
+  { mdmRecord(master: "product", id: "ABC123") { master data } }
 """
 
 scalar JSON
@@ -82,12 +82,12 @@ type FacetConfig {
 }
 
 """
-Facets metadata response for an entity
+Facets metadata response for a master
 """
 type MDMFacetsResponse {
-  "Entity name"
-  entity: String!
-  "Whether facets are enabled for this entity"
+  "Master name"
+  master: String!
+  "Whether facets are enabled for this master"
   facetsEnabled: Boolean!
   "Total schema fields"
   totalFields: Int
@@ -106,8 +106,8 @@ Paginated response for master data queries.
 This is the COMMON response type for all entities.
 """
 type MDMQueryResponse {
-  "Entity name (e.g., product, stores, categories)"
-  entity: String!
+  "Master name (e.g., product, stores, categories)"
+  master: String!
   "Number of records in this page"
   count: Int!
   "Current page number (1-based)"
@@ -116,7 +116,7 @@ type MDMQueryResponse {
   pageSize: Int!
   "Total records matching the query"
   total: Int!
-  "Array of data records (shape depends on entity schema)"
+  "Array of data records (shape depends on master schema)"
   data: [JSON!]!
   "Aggregations/facets computed for facetable fields (if configured)"
   aggregations: [Aggregation!]
@@ -126,10 +126,30 @@ type MDMQueryResponse {
 Single record response
 """
 type MDMRecordResponse {
-  "Entity name"
-  entity: String!
-  "Record data (shape depends on entity schema)"
+  "Master name"
+  master: String!
+  "Record data (shape depends on master schema)"
   data: JSON!
+}
+
+"""
+Mutation response for create/update/patch/delete operations.
+Requires x-partner-id and x-partner-key headers for authentication.
+Only available for public entities with CRUD enabled.
+"""
+type MDMMutationResponse {
+  "Whether the operation succeeded"
+  success: Boolean!
+  "Master name"
+  master: String
+  "Operation performed: create, update, patch, delete"
+  operation: String
+  "The created/updated record data (not returned for delete)"
+  record: JSON
+  "Deleted record ID (only for delete)"
+  id: String
+  "Error message if operation failed"
+  error: String
 }
 
 """
@@ -143,21 +163,21 @@ type Query {
   """
   Query master data records with optional filters, pagination, and sorting.
   
-  Filters are passed as a JSON string of key-value pairs matching the entity's 
+  Filters are passed as a JSON string of key-value pairs matching the master's 
   queryable column names. Multiple filters combine with AND logic.
   
-  When facets are configured on the entity, aggregations are returned automatically.
+  When facets are configured on the master, aggregations are returned automatically.
   Aggregation counts update dynamically based on applied filters (excluding the
   facet's own field — "disjunctive faceting").
   
   Examples:
-    mdmQuery(entity: "product", page: 1, pageSize: 25)
-    mdmQuery(entity: "product", filters: "{\"brand\":\"Nike\",\"status\":\"active\"}")
-    mdmQuery(entity: "product", facets: "true", filters: "{\"brand\":\"Nike\"}")
+    mdmQuery(master: "product", page: 1, pageSize: 25)
+    mdmQuery(master: "product", filters: "{\"brand\":\"Nike\",\"status\":\"active\"}")
+    mdmQuery(master: "product", facets: "true", filters: "{\"brand\":\"Nike\"}")
   """
   mdmQuery(
-    "Entity/file name to query (required)"
-    entity: String!
+    "Master name to query (required)"
+    master: String!
     "Page number (default: 1)"
     page: Int
     "Records per page (default: 25, max: 100)"
@@ -168,43 +188,112 @@ type Query {
     order: String
     "Comma-separated field names to include in response"
     fields: String
-    "Force include facets/aggregations: true or false (default: auto based on entity config)"
+    "Force include facets/aggregations: true or false (default: auto based on master config)"
     facets: String
     "Filters as JSON string of key-value pairs e.g. {\"brand\":\"Nike\",\"status\":\"active\"}"
     filters: String
   ): MDMQueryResponse!
 
   """
-  Get a single record by entity name and primary key value.
+  Get a single record by master name and primary key value.
   
   Example:
-    mdmRecord(entity: "product", id: "ABC123")
+    mdmRecord(master: "product", id: "ABC123")
   """
   mdmRecord(
-    "Entity/file name (required)"
-    entity: String!
+    "Master name (required)"
+    master: String!
     "Primary key value (required)"
     id: String!
   ): MDMRecordResponse!
 
   """
-  Get facets/aggregation metadata for an entity.
+  Get facets/aggregation metadata for a master.
   Returns which fields are facetable and their configuration.
   Optionally returns live aggregated values with counts.
   
   Use this to build faceted navigation / filter UIs on the frontend.
   
   Examples:
-    mdmFacets(entity: "product") — config only
-    mdmFacets(entity: "product", values: "true") — config + live counts
-    mdmFacets(entity: "product", values: "true", filters: "{\"brand\":\"Nike\"}") — counts with filter
+    mdmFacets(master: "product") — config only
+    mdmFacets(master: "product", values: "true") — config + live counts
+    mdmFacets(master: "product", values: "true", filters: "{\"brand\":\"Nike\"}") — counts with filter
   """
   mdmFacets(
-    "Entity/file name (required)"
-    entity: String!
+    "Master name (required)"
+    master: String!
     "Return live aggregated values with counts (default: false)"
     values: String
     "Filters as JSON string to narrow aggregation scope"
     filters: String
   ): MDMFacetsResponse!
+}
+
+"""
+Mutations for CRUD operations on master data records.
+All mutations require `x-partner-id` and `x-partner-key` headers for authentication.
+Only available for entities with visibility=public and crudEnabled=true.
+
+Partners are onboarded via the Integration Token Console in the Admin UI.
+Each partner receives a unique partnerId and partnerKey for API access.
+"""
+type Mutation {
+  """
+  Create a new record. The data must include the master's primary key field.
+  Validates against the master schema if one is defined.
+  
+  Example:
+    mutation { mdmCreate(master: "product", data: "{\"sku\":\"NEW1\",\"name\":\"Test\"}") { success master record } }
+  """
+  mdmCreate(
+    "Master name (required)"
+    master: String!
+    "Record data as JSON string (must include primary key field)"
+    data: String!
+  ): MDMMutationResponse!
+
+  """
+  Full update (replace) of an existing record by primary key.
+  All fields in data replace the existing record.
+  
+  Example:
+    mutation { mdmUpdate(master: "product", id: "SKU123", data: "{\"sku\":\"SKU123\",\"name\":\"Updated\"}") { success record } }
+  """
+  mdmUpdate(
+    "Master name (required)"
+    master: String!
+    "Primary key value of the record to update (required)"
+    id: String!
+    "Full replacement data as JSON string"
+    data: String!
+  ): MDMMutationResponse!
+
+  """
+  Partial update (patch) of an existing record.
+  Only the provided fields are merged into the existing record.
+  
+  Example:
+    mutation { mdmPatch(master: "product", id: "SKU123", data: "{\"name\":\"Patched Name\"}") { success record } }
+  """
+  mdmPatch(
+    "Master name (required)"
+    master: String!
+    "Primary key value of the record to patch (required)"
+    id: String!
+    "Partial data as JSON string (merged with existing record)"
+    data: String!
+  ): MDMMutationResponse!
+
+  """
+  Delete a record by primary key (soft delete).
+  
+  Example:
+    mutation { mdmDelete(master: "product", id: "SKU123") { success id } }
+  """
+  mdmDelete(
+    "Master name (required)"
+    master: String!
+    "Primary key value of the record to delete (required)"
+    id: String!
+  ): MDMMutationResponse!
 }

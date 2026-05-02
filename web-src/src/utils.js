@@ -40,7 +40,7 @@ async function actionWebInvoke (actionUrl, headers = {}, params = {}, options = 
       }
     })
     actionUrl = url.toString()
-  } else if (fetchConfig.method === 'POST') {
+  } else {
     fetchConfig.body = JSON.stringify(params)
   }
 
@@ -49,7 +49,15 @@ async function actionWebInvoke (actionUrl, headers = {}, params = {}, options = 
   let content = await response.text()
 
   if (!response.ok) {
-    throw new Error(`failed request to '${actionUrl}' with status: ${response.status} and message: ${content}`)
+    // Parse structured error responses: { error: "message" } or { body: { error: "message" } }
+    let errorMsg = content
+    try {
+      const parsed = JSON.parse(content)
+      if (parsed.error) errorMsg = parsed.error
+      else if (parsed.body && parsed.body.error) errorMsg = parsed.body.error
+      else if (parsed.message) errorMsg = parsed.message
+    } catch (e) { /* raw text fallback */ }
+    throw new Error(errorMsg)
   }
   try {
     content = JSON.parse(content)

@@ -4,7 +4,7 @@
  * Returns normalized log entries from aio-lib-db audit collection.
  */
 
-const { getDbClient, COLLECTIONS, createResponse, createErrorResponse, validateIMSToken } = require('../mdm-utils')
+const { getDbClient, safeFindOne, COLLECTIONS, createResponse, createErrorResponse, validateIMSToken, getEnvConfig, getCachedSettings } = require('../mdm-utils')
 
 async function main (params) {
   if (params.__ow_method === 'options') return createResponse({})
@@ -14,16 +14,17 @@ async function main (params) {
 
   let client
   try {
-    const { entity, operation, actor, status, page, pageSize, startDate, endDate } = params
+    const entity = params.master || params.entity
+    const operation = params.action || params.operation
+    const actor = params.user || params.actor
+    const { status, page, pageSize, startDate, endDate } = params
 
     client = await getDbClient(params)
     const auditCol = await client.collection(COLLECTIONS.AUDIT)
 
-    // Build filter
+    // Build DB-safe filter (only simple equality filters for aio-lib-db compatibility)
     const filter = {}
-    if (entity) filter.entityName = entity
-    if (operation) filter.operation = operation
-    if (actor) filter.actor = { $regex: actor, $options: 'i' }
+    if (entity) filter.masterName = entity
     if (status) filter.status = status
 
     // Date range filter
@@ -33,27 +34,56 @@ async function main (params) {
       if (endDate) filter.timestamp.$lte = endDate
     }
 
-    // Pagination
+    // Pagination — use settings-configured limits
+    const settingsDoc = await getCachedSettings(client)
+    const env = getEnvConfig(params)
+    const apiSettings = settingsDoc?.api || {}
+    const maxPageSize = apiSettings.maxPageSize || env.maxPageSize
+    const defaultPageSize = apiSettings.defaultPageSize || env.defaultPageSize
+
     const p = Math.max(1, parseInt(page) || 1)
-    const ps = Math.min(100, Math.max(1, parseInt(pageSize) || 25))
+    const ps = Math.min(maxPageSize, Math.max(1, parseInt(pageSize) || defaultPageSize))
 
-    const total = await auditCol.countDocuments(filter)
-
-    const rawLogs = await auditCol.find(filter)
+    // Fetch all matching logs then apply JS-level filtering for operation/actor
+    // (aio-lib-db doesn't reliably support $or/$regex compound filters)
+    let allLogs = await auditCol.find(filter)
       .sort({ timestamp: -1 })
-      .skip((p - 1) * ps)
-      .limit(ps)
       .toArray()
+
+    // JS-level filter for operation/action (stored under either key depending on source)
+    if (operation) {
+      const opLower = operation.toLowerCase()
+      allLogs = allLogs.filter(log =>
+        (log.operation || '').toLowerCase().includes(opLower) ||
+        (log.action || '').toLowerCase().includes(opLower)
+      )
+    }
+
+    // JS-level filter for actor/user (stored under either key depending on source)
+    if (actor) {
+      const actorLower = actor.toLowerCase()
+      allLogs = allLogs.filter(log =>
+        (log.actor || '').toLowerCase().includes(actorLower) ||
+        (log.user || '').toLowerCase().includes(actorLower)
+      )
+    }
+
+    const total = allLogs.length
+    const rawLogs = allLogs.slice((p - 1) * ps, p * ps)
 
     // Normalize log entries for frontend consumption
     const logs = rawLogs.map(log => {
-      const { _id, entityName, operation: op, actor: user, status: s, timestamp, ...rest } = log
+      const { _id, masterName, operation: op, action: act, actor: usr, user: usr2, status: s, timestamp, ...rest } = log
+      const operation = op || act || 'unknown'
+      const user = usr || usr2 || 'system'
       return {
-        id: _id || `${timestamp}-${entityName}-${op}`,
+        id: _id || `${timestamp}-${masterName}-${operation}`,
         timestamp: timestamp || null,
-        entity: entityName || '_system',
-        operation: op || 'unknown',
-        actor: user || 'system',
+        master: masterName || '_system',
+        action: operation,
+        operation,
+        user,
+        actor: user,
         status: s || 'unknown',
         details: rest
       }

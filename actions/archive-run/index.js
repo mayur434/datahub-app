@@ -16,13 +16,14 @@ const { Core } = require('@adobe/aio-sdk')
 const libDb = require('@adobe/aio-lib-db')
 const filesLib = require('@adobe/aio-lib-files')
 const crypto = require('crypto')
+const { getTimezoneDate } = require('../mdm-utils')
 
 // ============ DB Connection ============
 
 async function getDbClient (params) {
   const { generateAccessToken } = Core.AuthClient
   const token = await generateAccessToken(params)
-  const region = process.env.AIO_DB_REGION || 'apac'
+  const region = params.DB_REGION || process.env.AIO_DB_REGION || 'apac'
   const db = await libDb.init({ token: token.access_token, region })
   return await db.connect()
 }
@@ -36,6 +37,10 @@ async function safeFindOne (collection, filter) {
   }
 }
 
+function getMasterCollectionName (masterName) {
+  return `mdm_${masterName}`
+}
+
 // ============ Main Action ============
 
 async function main (params) {
@@ -46,7 +51,6 @@ async function main (params) {
   try {
     client = await getDbClient(params)
     const metaCol = await client.collection('metadata')
-    const recordsCol = await client.collection('records')
     const archivesCol = await client.collection('archives')
     const settingsCol = await client.collection('settings')
 
@@ -76,7 +80,7 @@ async function main (params) {
     const token = await generateAccessToken(params)
     const files = await filesLib.init({ ow: { auth: token.access_token } })
 
-    // Get all active entities
+    // Get all active masters
     const allEntities = await metaCol.find({ status: 'active' }).toArray()
 
     const results = {
@@ -88,32 +92,33 @@ async function main (params) {
       details: []
     }
 
-    // --- Phase 1: Archive entities over threshold ---
+    // --- Phase 1: Archive masters over threshold ---
     for (const entity of allEntities) {
       try {
         const archivalConfig = entity.archival || {}
 
-        // Skip if archival not enabled for this entity
+        // Skip if archival not enabled for this master
         if (!archivalConfig.enabled) continue
 
         results.processed++
 
-        // Resolve effective config (entity override > global default)
+        // Resolve effective config (master override > global default)
         const threshold = archivalConfig.threshold || globalArchival.defaultThreshold
         const keepLatest = archivalConfig.keepLatest || globalArchival.defaultKeepLatest
         const retentionDays = archivalConfig.retentionDays || globalArchival.defaultRetentionDays
         const archiveFormat = archivalConfig.archiveFormat || globalArchival.archiveFormat
         const notifyEmail = archivalConfig.notifyEmail || globalArchival.notifyEmail
 
-        // Get current record count
-        const currentCount = await recordsCol.countDocuments({
-          entityName: entity.entityName,
-          deleted: false,
-          status: 'active'
-        })
+        // Get per-master collection
+        const masterColName = getMasterCollectionName(entity.masterName)
+        const masterCol = await client.collection(masterColName)
+
+        // Get current record count (JS-level filter for aio-lib-db quirks)
+        const allRecs = await masterCol.find({}).toArray()
+        const currentCount = allRecs.filter(r => r.deleted !== true).length
 
         if (currentCount <= threshold) {
-          logger.info(`Entity '${entity.entityName}': ${currentCount}/${threshold} - below threshold, skipping`)
+          logger.info(`Master '${entity.masterName}': ${currentCount}/${threshold} - below threshold, skipping`)
           continue
         }
 
@@ -121,17 +126,12 @@ async function main (params) {
         const recordsToArchive = currentCount - keepLatest
         if (recordsToArchive <= 0) continue
 
-        logger.info(`Entity '${entity.entityName}': ${currentCount} records, threshold ${threshold}, archiving ${recordsToArchive}`)
+        logger.info(`Master '${entity.masterName}': ${currentCount} records, threshold ${threshold}, archiving ${recordsToArchive}`)
 
         // Fetch oldest records to archive (sort by createdAt ascending = oldest first)
-        const oldRecords = await recordsCol.find({
-          entityName: entity.entityName,
-          deleted: false,
-          status: 'active'
-        })
-          .sort({ createdAt: 1 })
-          .limit(recordsToArchive)
-          .toArray()
+        const activeRecords = allRecs.filter(r => r.deleted !== true)
+        activeRecords.sort((a, b) => (a.createdAt || '').localeCompare(b.createdAt || ''))
+        const oldRecords = activeRecords.slice(0, recordsToArchive)
 
         if (oldRecords.length === 0) continue
 
@@ -140,10 +140,10 @@ async function main (params) {
 
         // Generate archive file path and ID
         const archiveId = `arc-${crypto.randomUUID().split('-')[0]}`
-        const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+        const timestamp = getTimezoneDate(params).replace(/[:.]/g, '-').slice(0, 19)
         const extension = archiveFormat === 'json' ? 'json' : 'csv'
-        const fileName = `${entity.entityName}-archive-${timestamp}.${extension}`
-        const filePath = `archives/${entity.entityName}/${fileName}`
+        const fileName = `${entity.masterName}-archive-${timestamp}.${extension}`
+        const filePath = `archives/${entity.masterName}/${fileName}`
 
         // Upload to aio-lib-files with public access
         const contentBuffer = Buffer.from(archiveContent, 'utf-8')
@@ -160,7 +160,7 @@ async function main (params) {
         // Record archive metadata
         const archiveRecord = {
           archiveId,
-          entityName: entity.entityName,
+          masterName: entity.masterName,
           fileName,
           filePath,
           publicUrl,
@@ -185,26 +185,22 @@ async function main (params) {
         // Delete archived records from DB
         const primaryKeys = oldRecords.map(r => r.primaryKey)
 
-        // Delete in batches of 1000 to avoid timeouts
-        const batchSize = 1000
+        // Delete in batches to avoid timeouts (uses performance.bulkBatchSize from settings)
+        const batchSize = (globalSettings && globalSettings.performance && globalSettings.performance.bulkBatchSize) || Number(params.BULK_BATCH_SIZE) || 1000
         for (let i = 0; i < primaryKeys.length; i += batchSize) {
           const batch = primaryKeys.slice(i, i + batchSize)
-          await recordsCol.deleteMany({
-            entityName: entity.entityName,
+          await masterCol.deleteMany({
             primaryKey: { $in: batch }
           })
         }
 
-        // Update entity metadata
-        const newCount = await recordsCol.countDocuments({
-          entityName: entity.entityName,
-          deleted: false,
-          status: 'active'
-        })
+        // Update master metadata
+        const remainingRecs = await masterCol.find({}).toArray()
+        const newCount = remainingRecs.filter(r => r.deleted !== true).length
         const totalArchived = (archivalConfig.totalArchived || 0) + oldRecords.length
 
         await metaCol.updateOne(
-          { entityName: entity.entityName },
+          { masterName: entity.masterName },
           {
             $set: {
               recordCount: newCount,
@@ -218,7 +214,7 @@ async function main (params) {
         // Audit log
         const auditCol = await client.collection('audit')
         await auditCol.insertOne({
-          entityName: entity.entityName,
+          masterName: entity.masterName,
           operation: 'archive',
           actor: 'system:scheduler',
           status: 'success',
@@ -236,7 +232,7 @@ async function main (params) {
         // Send email notification if configured
         if (notifyEmail) {
           await sendNotification(logger, notifyEmail, {
-            entity: entity.entityName,
+            master: entity.masterName,
             displayName: entity.displayName,
             recordsArchived: oldRecords.length,
             fileName,
@@ -250,7 +246,7 @@ async function main (params) {
         results.archived++
         results.recordsArchived += oldRecords.length
         results.details.push({
-          entity: entity.entityName,
+          master: entity.masterName,
           archiveId,
           recordsArchived: oldRecords.length,
           fileName,
@@ -258,11 +254,11 @@ async function main (params) {
           expiresAt
         })
 
-        logger.info(`Archived ${oldRecords.length} records from '${entity.entityName}' → ${fileName}`)
+        logger.info(`Archived ${oldRecords.length} records from '${entity.masterName}' → ${fileName}`)
       } catch (entityError) {
-        logger.error(`Error archiving '${entity.entityName}':`, entityError)
+        logger.error(`Error archiving '${entity.masterName}':`, entityError)
         results.errors.push({
-          entity: entity.entityName,
+          master: entity.masterName,
           error: entityError.message
         })
       }
@@ -271,7 +267,7 @@ async function main (params) {
     // --- Phase 2: Cleanup expired archives ---
     if (globalArchival.autoCleanupExpired) {
       try {
-        const now = new Date().toISOString()
+        const now = getTimezoneDate(params)
         const expiredArchives = await archivesCol.find({
           status: 'active',
           expiresAt: { $lt: now }
@@ -318,7 +314,7 @@ async function main (params) {
 function generateArchiveContent (records, schema, format) {
   if (format === 'json') {
     return JSON.stringify({
-      exportedAt: new Date().toISOString(),
+      exportedAt: getTimezoneDate(),
       recordCount: records.length,
       records: records.map(r => r.data)
     }, null, 2)

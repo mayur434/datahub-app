@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useCallback } from 'react'
+import React, { createContext, useContext, useState, useCallback, useMemo } from 'react'
 
 const NotificationContext = createContext(null)
 
@@ -22,12 +22,12 @@ export function NotificationProvider ({ children }) {
     setNotifications(prev => prev.filter(n => n.id !== id))
   }, [])
 
-  const notify = {
+  const notify = useMemo(() => ({
     success: (msg, dur) => addNotification(msg, 'positive', dur),
     error: (msg, dur) => addNotification(msg, 'negative', dur || 8000),
     info: (msg, dur) => addNotification(msg, 'info', dur),
     warning: (msg, dur) => addNotification(msg, 'notice', dur || 6000)
-  }
+  }), [addNotification])
 
   return (
     <NotificationContext.Provider value={notify}>

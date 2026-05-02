@@ -1,0 +1,16 @@
+{
+  "type": "object",
+  "properties": {
+    "master": { "type": "string" },
+    "count": { "type": "integer" },
+    "requested": { "type": "integer" },
+    "data": {
+      "type": "array",
+      "items": {}
+    },
+    "notFound": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  }
+}

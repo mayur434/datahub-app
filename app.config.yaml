@@ -8,13 +8,33 @@ application:
     packages:
       pimapp:
         license: Apache-2.0
+        inputs:
+          LOG_LEVEL: debug
+          # Infrastructure (immutable — set once at init)
+          DB_REGION: $DB_REGION
+          APP_TIMEZONE: $APP_TIMEZONE
+          MDM_MAX_STORAGE_MB: $MDM_MAX_STORAGE_MB
+          # Cache
+          METRICS_CACHE_TTL_MINUTES: $METRICS_CACHE_TTL_MINUTES
+          # API defaults
+          DEFAULT_PAGE_SIZE: $DEFAULT_PAGE_SIZE
+          MAX_PAGE_SIZE: $MAX_PAGE_SIZE
+          RATE_LIMIT_PER_MINUTE: $RATE_LIMIT_PER_MINUTE
+          API_MESH_CACHE_TTL: $API_MESH_CACHE_TTL
+          # Schema
+          MAX_SCHEMA_FIELDS: $MAX_SCHEMA_FIELDS
+          # Versioning
+          MAX_VERSIONS_PER_ENTITY: $MAX_VERSIONS_PER_ENTITY
+          # Performance
+          BULK_BATCH_SIZE: $BULK_BATCH_SIZE
+          QUERY_TIMEOUT: $QUERY_TIMEOUT
+          # Audit
+          AUDIT_RETENTION_DAYS: $AUDIT_RETENTION_DAYS
         actions:
           generic:
             function: actions/generic/index.js
             web: 'yes'
             runtime: nodejs:22
-            inputs:
-              LOG_LEVEL: debug
             annotations:
               require-adobe-auth: true
               final: true
@@ -24,7 +44,6 @@ application:
             web: 'yes'
             runtime: nodejs:22
             inputs:
-              LOG_LEVEL: debug
               apiKey: $SERVICE_API_KEY
             annotations:
               require-adobe-auth: true
@@ -34,8 +53,6 @@ application:
             function: actions/dashboard/index.js
             web: 'yes'
             runtime: nodejs:22
-            inputs:
-              LOG_LEVEL: debug
             annotations:
               require-adobe-auth: true
               final: true
@@ -44,8 +61,6 @@ application:
             function: actions/file-upload/index.js
             web: 'yes'
             runtime: nodejs:22
-            inputs:
-              LOG_LEVEL: debug
             annotations:
               require-adobe-auth: true
               final: true
@@ -54,8 +69,6 @@ application:
             function: actions/file-list/index.js
             web: 'yes'
             runtime: nodejs:22
-            inputs:
-              LOG_LEVEL: debug
             annotations:
               require-adobe-auth: true
               final: true
@@ -64,8 +77,6 @@ application:
             function: actions/file-detail/index.js
             web: 'yes'
             runtime: nodejs:22
-            inputs:
-              LOG_LEVEL: debug
             annotations:
               require-adobe-auth: true
               final: true
@@ -74,8 +85,6 @@ application:
             function: actions/file-delete/index.js
             web: 'yes'
             runtime: nodejs:22
-            inputs:
-              LOG_LEVEL: debug
             annotations:
               require-adobe-auth: true
               final: true
@@ -84,8 +93,6 @@ application:
             function: actions/metadata-update/index.js
             web: 'yes'
             runtime: nodejs:22
-            inputs:
-              LOG_LEVEL: debug
             annotations:
               require-adobe-auth: true
               final: true
@@ -94,8 +101,6 @@ application:
             function: actions/query-data/index.js
             web: 'yes'
             runtime: nodejs:22
-            inputs:
-              LOG_LEVEL: debug
             annotations:
               require-adobe-auth: true
               final: true
@@ -104,8 +109,6 @@ application:
             function: actions/mdm-data/index.js
             web: 'yes'
             runtime: nodejs:22
-            inputs:
-              LOG_LEVEL: debug
             annotations:
               require-adobe-auth: false
               final: true
@@ -114,8 +117,6 @@ application:
             function: actions/mdm-facets/index.js
             web: 'yes'
             runtime: nodejs:22
-            inputs:
-              LOG_LEVEL: debug
             annotations:
               require-adobe-auth: false
               final: true
@@ -124,8 +125,6 @@ application:
             function: actions/record-crud/index.js
             web: 'yes'
             runtime: nodejs:22
-            inputs:
-              LOG_LEVEL: debug
             annotations:
               require-adobe-auth: true
               final: true
@@ -134,8 +133,6 @@ application:
             function: actions/full-update/index.js
             web: 'yes'
             runtime: nodejs:22
-            inputs:
-              LOG_LEVEL: debug
             annotations:
               require-adobe-auth: true
               final: true
@@ -144,8 +141,6 @@ application:
             function: actions/delta-update/index.js
             web: 'yes'
             runtime: nodejs:22
-            inputs:
-              LOG_LEVEL: debug
             annotations:
               require-adobe-auth: true
               final: true
@@ -154,8 +149,6 @@ application:
             function: actions/bulk-update/index.js
             web: 'yes'
             runtime: nodejs:22
-            inputs:
-              LOG_LEVEL: debug
             annotations:
               require-adobe-auth: true
               final: true
@@ -164,8 +157,6 @@ application:
             function: actions/schema-update/index.js
             web: 'yes'
             runtime: nodejs:22
-            inputs:
-              LOG_LEVEL: debug
             annotations:
               require-adobe-auth: true
               final: true
@@ -174,8 +165,6 @@ application:
             function: actions/version-list/index.js
             web: 'yes'
             runtime: nodejs:22
-            inputs:
-              LOG_LEVEL: debug
             annotations:
               require-adobe-auth: true
               final: true
@@ -184,8 +173,6 @@ application:
             function: actions/version-rollback/index.js
             web: 'yes'
             runtime: nodejs:22
-            inputs:
-              LOG_LEVEL: debug
             annotations:
               require-adobe-auth: true
               final: true
@@ -194,8 +181,6 @@ application:
             function: actions/visibility-update/index.js
             web: 'yes'
             runtime: nodejs:22
-            inputs:
-              LOG_LEVEL: debug
             annotations:
               require-adobe-auth: true
               final: true
@@ -204,8 +189,6 @@ application:
             function: actions/audit-list/index.js
             web: 'yes'
             runtime: nodejs:22
-            inputs:
-              LOG_LEVEL: debug
             annotations:
               require-adobe-auth: true
               final: true
@@ -214,8 +197,6 @@ application:
             function: actions/app-settings/index.js
             web: 'yes'
             runtime: nodejs:22
-            inputs:
-              LOG_LEVEL: debug
             annotations:
               require-adobe-auth: true
               final: true
@@ -224,8 +205,6 @@ application:
             function: actions/audit-cleanup/index.js
             web: 'yes'
             runtime: nodejs:22
-            inputs:
-              LOG_LEVEL: debug
             annotations:
               require-adobe-auth: true
               final: true
@@ -234,8 +213,6 @@ application:
             function: actions/archive-run/index.js
             web: 'yes'
             runtime: nodejs:22
-            inputs:
-              LOG_LEVEL: debug
             annotations:
               require-adobe-auth: true
               final: true
@@ -244,8 +221,6 @@ application:
             function: actions/archive-list/index.js
             web: 'yes'
             runtime: nodejs:22
-            inputs:
-              LOG_LEVEL: debug
             annotations:
               require-adobe-auth: true
               final: true
@@ -254,8 +229,22 @@ application:
             function: actions/archive-config/index.js
             web: 'yes'
             runtime: nodejs:22
-            inputs:
-              LOG_LEVEL: debug
+            annotations:
+              require-adobe-auth: true
+              final: true
+              include-ims-credentials: true
+          partner-management:
+            function: actions/partner-management/index.js
+            web: 'yes'
+            runtime: nodejs:22
+            annotations:
+              require-adobe-auth: true
+              final: true
+              include-ims-credentials: true
+          infra-metrics:
+            function: actions/infra-metrics/index.js
+            web: 'yes'
+            runtime: nodejs:22
             annotations:
               require-adobe-auth: true
               final: true
@@ -269,6 +258,14 @@ application:
         feed: /whisk.system/alarms/alarm
         inputs:
           cron: 0 3 * * *
+      metrics-refresh:
+        feed: /whisk.system/alarms/alarm
+        inputs:
+          cron: '*/15 * * * *'
+      dashboard-refresh:
+        feed: /whisk.system/alarms/alarm
+        inputs:
+          cron: '*/15 * * * *'
     rules:
       audit-cleanup-rule:
         trigger: audit-cleanup-daily
@@ -276,3 +273,9 @@ application:
       archive-run-rule:
         trigger: archive-run-daily
         action: pimapp/archive-run
+      metrics-refresh-rule:
+        trigger: metrics-refresh
+        action: pimapp/infra-metrics
+      dashboard-refresh-rule:
+        trigger: dashboard-refresh
+        action: pimapp/dashboard

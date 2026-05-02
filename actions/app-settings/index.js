@@ -4,107 +4,116 @@
  * Supports GET (read all settings) and POST (update settings).
  */
 
-const { getDbClient, safeFindOne, COLLECTIONS, createAuditLog, createResponse, createErrorResponse, validateIMSToken, getUserFromParams } = require('../mdm-utils')
+const { getDbClient, safeFindOne, COLLECTIONS, createAuditLog, createResponse, createErrorResponse, validateIMSToken, getUserFromParams, getEnvConfig, invalidateSettingsCache, getTimezoneDate, registerUserSession, deregisterUserSession } = require('../mdm-utils')
 
 const SETTINGS_DOC_ID = 'app-settings'
 
-// Comprehensive default settings for the entire application
-const DEFAULT_SETTINGS = {
-  general: {
-    appName: 'AEM MDM Console',
-    environment: 'production',
-    defaultVisibility: 'private',
-    defaultCrudEnabled: true,
-    entityNamePattern: '^[a-z][a-z0-9_-]*$',
-    timezone: 'UTC'
-  },
-  dataManagement: {
-    maxRecordsPerFile: 50000,
-    maxFileSizeMB: 10,
-    allowedFileTypes: ['csv'],
-    primaryKeyRequired: true,
-    autoGenerateSchema: true,
-    defaultFieldType: 'string',
-    maxSchemaFields: 100,
-    maxEntityNameLength: 50
-  },
-  api: {
-    defaultPageSize: 25,
-    maxPageSize: 100,
-    rateLimitPerMinute: 1000,
-    enableCORS: true,
-    corsOrigins: '*',
-    requireAuthForPublic: false,
-    apiMeshCacheTTL: 300,
-    enableFieldSelection: true,
-    enableSorting: true,
-    enableFiltering: true
-  },
-  versioning: {
-    enabled: true,
-    retentionPolicy: 'last-10-versions',
-    maxVersionsPerEntity: 50,
-    autoVersionOnUpload: true,
-    enableRollback: true
-  },
-  audit: {
-    enabled: true,
-    retentionDays: 90,
-    cleanupEnabled: false,
-    cleanupSchedule: '0 2 * * *',
-    logReadOperations: false,
-    logLevel: 'operations',
-    alertOnFailure: false,
-    alertThreshold: 10,
-    includePayloadInLog: false,
-    maxPayloadLogSize: 1024
-  },
-  security: {
-    requireIMSAuth: true,
-    allowS2SAuth: true,
-    tokenValidation: 'strict',
-    enableIPWhitelist: false,
-    ipWhitelist: [],
-    sessionTimeout: 3600,
-    maxLoginAttempts: 5
-  },
-  ui: {
-    theme: 'auto',
-    defaultPageSize: 25,
-    showSystemEntities: false,
-    enableExport: true,
-    enableBulkOperations: true,
-    dateFormat: 'YYYY-MM-DD HH:mm:ss',
-    maxInlineEditFields: 20
-  },
-  notifications: {
-    enabled: false,
-    channels: ['ui'],
-    notifyOnUpload: true,
-    notifyOnDelete: true,
-    notifyOnSchemaChange: true,
-    notifyOnError: true,
-    webhookUrl: '',
-    webhookSecret: ''
-  },
-  performance: {
-    dbRegion: 'apac',
-    connectionPoolSize: 10,
-    queryTimeout: 30000,
-    enableIndexing: true,
-    bulkBatchSize: 1000
-  },
-  archival: {
-    enabled: true,
-    defaultThreshold: 50000,
-    defaultRetentionDays: 90,
-    defaultKeepLatest: 10000,
-    archiveFormat: 'csv',
-    notifyEmail: '',
-    scheduleTime: '0 3 * * *',
-    maxArchiveSizeMB: 50,
-    compressArchives: false,
-    autoCleanupExpired: true
+/**
+ * Build default settings from environment config.
+ * Env vars provide the baseline; user overrides are stored in DB and deep-merged on read.
+ */
+function buildDefaultSettings (env) {
+  return {
+    general: {
+      appName: 'AEM MDM Console',
+      environment: 'production',
+      defaultVisibility: 'private',
+      defaultCrudEnabled: true,
+      masterNamePattern: '^[a-z][a-z0-9_]*$',
+      timezone: env.appTimezone
+    },
+    guardrails: {
+      maxStorageMB: env.mdmMaxStorageMB,
+      maxFileSizeMB: 10
+    },
+    dataManagement: {
+      maxRecordsPerFile: 50000,
+      maxFileSizeMB: 10,
+      allowedFileTypes: ['csv'],
+      primaryKeyRequired: true,
+      autoGenerateSchema: true,
+      defaultFieldType: 'string',
+      maxSchemaFields: env.maxSchemaFields,
+      maxMasterNameLength: 60
+    },
+    api: {
+      defaultPageSize: env.defaultPageSize,
+      maxPageSize: env.maxPageSize,
+      rateLimitPerMinute: env.rateLimitPerMinute,
+      enableCORS: true,
+      corsOrigins: '*',
+      requireAuthForPublic: false,
+      apiMeshCacheTTL: env.apiMeshCacheTTL,
+      enableFieldSelection: true,
+      enableSorting: true,
+      enableFiltering: true
+    },
+    versioning: {
+      enabled: true,
+      retentionPolicy: 'last-10-versions',
+      maxVersionsPerEntity: env.maxVersionsPerEntity,
+      autoVersionOnUpload: true,
+      enableRollback: true
+    },
+    audit: {
+      enabled: true,
+      retentionDays: env.auditRetentionDays,
+      cleanupEnabled: false,
+      cleanupSchedule: '0 2 * * *',
+      logReadOperations: false,
+      logLevel: 'operations',
+      alertOnFailure: false,
+      alertThreshold: 10,
+      includePayloadInLog: false,
+      maxPayloadLogSize: 1024
+    },
+    security: {
+      requireIMSAuth: true,
+      allowS2SAuth: true,
+      tokenValidation: 'strict',
+      enableIPWhitelist: false,
+      ipWhitelist: [],
+      sessionTimeout: 3600,
+      maxLoginAttempts: 5
+    },
+    ui: {
+      theme: 'auto',
+      defaultPageSize: env.defaultPageSize,
+      showSystemEntities: false,
+      enableExport: true,
+      enableBulkOperations: true,
+      dateFormat: 'YYYY-MM-DD HH:mm:ss',
+      maxInlineEditFields: 20
+    },
+    notifications: {
+      enabled: false,
+      channels: ['ui'],
+      notifyOnUpload: true,
+      notifyOnDelete: true,
+      notifyOnSchemaChange: true,
+      notifyOnError: true,
+      webhookUrl: '',
+      webhookSecret: ''
+    },
+    performance: {
+      dbRegion: env.dbRegion,
+      connectionPoolSize: 10,
+      queryTimeout: env.queryTimeout,
+      enableIndexing: true,
+      bulkBatchSize: env.bulkBatchSize
+    },
+    archival: {
+      enabled: true,
+      defaultThreshold: 50000,
+      defaultRetentionDays: env.auditRetentionDays,
+      defaultKeepLatest: 10000,
+      archiveFormat: 'csv',
+      notifyEmail: '',
+      scheduleTime: '0 3 * * *',
+      maxArchiveSizeMB: 50,
+      compressArchives: false,
+      autoCleanupExpired: true
+    }
   }
 }
 
@@ -114,18 +123,31 @@ async function main (params) {
   const auth = validateIMSToken(params)
   if (!auth.valid) return createErrorResponse(auth.error, 401)
 
-  const user = getUserFromParams(params)
   const method = (params.__ow_method || 'get').toLowerCase()
+  const env = getEnvConfig(params)
+  const DEFAULT_SETTINGS = buildDefaultSettings(env)
 
   let client
   try {
     client = await getDbClient(params)
+    const user = await getUserFromParams(params, client)
     const settingsCol = await client.collection(COLLECTIONS.SETTINGS)
 
+    // Session management operations
+    if (method === 'post' && params.sessionOperation) {
+      if (params.sessionOperation === 'register') {
+        const session = await registerUserSession(client, params)
+        return createResponse({ status: 'success', message: 'Session registered', user: session })
+      } else if (params.sessionOperation === 'deregister') {
+        await deregisterUserSession(client, params)
+        return createResponse({ status: 'success', message: 'Session deregistered' })
+      }
+    }
+
     if (method === 'get') {
-      return await handleGet(settingsCol)
+      return await handleGet(settingsCol, DEFAULT_SETTINGS)
     } else if (method === 'post') {
-      return await handleUpdate(client, settingsCol, params, user)
+      return await handleUpdate(client, settingsCol, params, user, DEFAULT_SETTINGS)
     } else {
       return createErrorResponse(`Unsupported method: ${method}`)
     }
@@ -137,7 +159,7 @@ async function main (params) {
   }
 }
 
-async function handleGet (settingsCol) {
+async function handleGet (settingsCol, DEFAULT_SETTINGS) {
   const settings = await safeFindOne(settingsCol, { settingsId: SETTINGS_DOC_ID })
   if (!settings) {
     return createResponse({ settings: DEFAULT_SETTINGS, isDefault: true })
@@ -146,7 +168,7 @@ async function handleGet (settingsCol) {
   return createResponse({ settings: deepMerge(DEFAULT_SETTINGS, rest), isDefault: false })
 }
 
-async function handleUpdate (client, settingsCol, params, user) {
+async function handleUpdate (client, settingsCol, params, user, DEFAULT_SETTINGS) {
   const { settings } = params
   if (!settings || typeof settings !== 'object') {
     return createErrorResponse('Missing or invalid settings object')
@@ -165,7 +187,7 @@ async function handleUpdate (client, settingsCol, params, user) {
   const settingsDoc = {
     ...merged,
     settingsId: SETTINGS_DOC_ID,
-    updatedAt: new Date().toISOString(),
+    updatedAt: getTimezoneDate(params),
     updatedBy: user
   }
 
@@ -180,8 +202,11 @@ async function handleUpdate (client, settingsCol, params, user) {
     await settingsCol.insertOne(settingsDoc)
   }
 
+  // Invalidate settings read-cache so next action reads fresh settings
+  await invalidateSettingsCache()
+
   await createAuditLog(client, {
-    entityName: '_system',
+    masterName: '_system',
     operation: 'settings-update',
     actor: user,
     status: 'success',
@@ -199,10 +224,21 @@ async function handleUpdate (client, settingsCol, params, user) {
 function validateSettings (settings) {
   const errors = []
 
+  if (settings.guardrails) {
+    const g = settings.guardrails
+    // maxStorageMB is env-level only — reject if client tries to override it
+    if (g.maxStorageMB !== undefined) {
+      errors.push('guardrails.maxStorageMB is read-only — set via MDM_MAX_STORAGE_MB in .env')
+    }
+    if (g.maxFileSizeMB !== undefined && (g.maxFileSizeMB < 1 || g.maxFileSizeMB > 100)) {
+      errors.push('guardrails.maxFileSizeMB must be 1–100')
+    }
+  }
+
   if (settings.dataManagement) {
     const dm = settings.dataManagement
-    if (dm.maxRecordsPerFile !== undefined && (dm.maxRecordsPerFile < 100 || dm.maxRecordsPerFile > 500000)) {
-      errors.push('dataManagement.maxRecordsPerFile must be 100–500000')
+    if (dm.maxRecordsPerFile !== undefined && (dm.maxRecordsPerFile < 1 || dm.maxRecordsPerFile > 500000)) {
+      errors.push('dataManagement.maxRecordsPerFile must be 1–500000')
     }
     if (dm.maxFileSizeMB !== undefined && (dm.maxFileSizeMB < 1 || dm.maxFileSizeMB > 100)) {
       errors.push('dataManagement.maxFileSizeMB must be 1–100')

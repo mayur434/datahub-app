@@ -8,7 +8,7 @@ import { fetchFileDetail, updateSchema } from './actionInvoker'
 import { useNotifications } from './NotificationProvider'
 
 function SchemaManager ({ runtime, ims }) {
-  const { entity } = useParams()
+  const { master } = useParams()
   const navigate = useNavigate()
   const notify = useNotifications()
   const [file, setFile] = useState(null)
@@ -31,12 +31,12 @@ function SchemaManager ({ runtime, ims }) {
 
   useEffect(() => {
     loadFile()
-  }, [entity])
+  }, [master])
 
   async function loadFile () {
     try {
       setLoading(true)
-      const result = await fetchFileDetail(entity, ims)
+      const result = await fetchFileDetail(master, ims)
       setFile(result.file)
       setError(null)
     } catch (e) {
@@ -50,7 +50,7 @@ function SchemaManager ({ runtime, ims }) {
     try {
       setLoading(true)
       setError(null)
-      await updateSchema(entity, 'add', {
+      await updateSchema(master, 'add', {
         name: newFieldName,
         type: newFieldType,
         required: newFieldRequired,
@@ -81,7 +81,7 @@ function SchemaManager ({ runtime, ims }) {
     try {
       setLoading(true)
       setError(null)
-      await updateSchema(entity, 'update', { name: fieldName, ...updates }, ims)
+      await updateSchema(master, 'update', { name: fieldName, ...updates }, ims)
       notify.success(`Field '${fieldName}' updated`)
       await loadFile()
     } catch (e) {
@@ -97,7 +97,7 @@ function SchemaManager ({ runtime, ims }) {
     try {
       setLoading(true)
       setError(null)
-      await updateSchema(entity, 'remove', { name: fieldName }, ims)
+      await updateSchema(master, 'remove', { name: fieldName }, ims)
       notify.success(`Field '${fieldName}' removed`)
       await loadFile()
     } catch (e) {
@@ -113,7 +113,7 @@ function SchemaManager ({ runtime, ims }) {
     try {
       setLoading(true)
       setError(null)
-      await updateSchema(entity, 'rename', { name: fieldName, newName: renameNewName }, ims)
+      await updateSchema(master, 'rename', { name: fieldName, newName: renameNewName }, ims)
       notify.success(`Field '${fieldName}' renamed to '${renameNewName}'`)
       setRenamingField(null)
       setRenameNewName('')
@@ -140,11 +140,11 @@ function SchemaManager ({ runtime, ims }) {
     <View UNSAFE_className='mdm-page'>
       <Flex justifyContent='space-between' alignItems='center' marginBottom='size-300'>
         <View>
-          <Heading level={1} UNSAFE_className='mdm-page__title'>Schema: {file?.displayName || entity}</Heading>
+          <Heading level={1} UNSAFE_className='mdm-page__title'>Schema: {file?.displayName || master}</Heading>
           <Text UNSAFE_className='mdm-page__subtitle'>Version: {file?.schemaVersionId} • {file?.schema?.length || 0} fields</Text>
         </View>
         <Flex gap='size-100'>
-          <Button variant='secondary' onPress={() => navigate(`/files/${entity}`)}>Back</Button>
+          <Button variant='secondary' onPress={() => navigate(`/masters/${master}`)}>Back</Button>
           <Button variant='accent' onPress={() => setShowAddForm(!showAddForm)}>Add Field</Button>
         </Flex>
       </Flex>

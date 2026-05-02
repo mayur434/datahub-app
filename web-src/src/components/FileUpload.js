@@ -1,11 +1,14 @@
-import React, { useState, useCallback, useRef } from 'react'
+import React, { useState, useCallback, useRef, useEffect } from 'react'
 import {
   Heading, View, Flex, Button, TextField, TextArea, Checkbox, CheckboxGroup,
   Picker, Item, Well, Text, ProgressCircle, Divider, Switch, NumberField
 } from '@adobe/react-spectrum'
 import { useNavigate } from 'react-router-dom'
-import { uploadFile } from './actionInvoker'
+import { uploadFile, invokeAction } from './actionInvoker'
 import { useNotifications } from './NotificationProvider'
+import { clearSwrCache } from './useSwrCache'
+
+const SYSTEM_FIELDS = ['master_id', 'createdAt', 'updatedAt', 'createdBy', 'updatedBy']
 
 function FileUpload ({ runtime, ims }) {
   const navigate = useNavigate()
@@ -23,8 +26,8 @@ function FileUpload ({ runtime, ims }) {
   const [headers, setHeaders] = useState([])
   const [previewRows, setPreviewRows] = useState([])
 
-  // Step 3: Entity config
-  const [entityName, setEntityName] = useState('')
+  // Step 3: Master config
+  const [masterName, setMasterName] = useState('')
   const [displayName, setDisplayName] = useState('')
   const [description, setDescription] = useState('')
   const [primaryKey, setPrimaryKey] = useState('')
@@ -36,9 +39,32 @@ function FileUpload ({ runtime, ims }) {
   const [requiredFields, setRequiredFields] = useState([])
   const [facetableFields, setFacetableFields] = useState([])
 
+  // Record-level audit config (selected during master creation, immutable after)
+  const [auditCreatedAt, setAuditCreatedAt] = useState(true)
+  const [auditUpdatedAt, setAuditUpdatedAt] = useState(true)
+  const [auditCreatedBy, setAuditCreatedBy] = useState(false)
+  const [auditUpdatedBy, setAuditUpdatedBy] = useState(false)
+
   // Drag and drop
   const [isDragging, setIsDragging] = useState(false)
   const fileInputRef = useRef(null)
+
+  // Settings-driven limits
+  const [maxFileSizeMB, setMaxFileSizeMB] = useState(10)
+  const [maxRecordsPerFile, setMaxRecordsPerFile] = useState(50000)
+
+  useEffect(() => {
+    async function loadLimits () {
+      try {
+        const result = await invokeAction('app-settings', {}, ims, 'GET')
+        const s = result.settings || {}
+        const dm = s.dataManagement || {}
+        if (dm.maxFileSizeMB) setMaxFileSizeMB(dm.maxFileSizeMB)
+        if (dm.maxRecordsPerFile) setMaxRecordsPerFile(dm.maxRecordsPerFile)
+      } catch (e) { /* use defaults */ }
+    }
+    loadLimits()
+  }, [])
 
   function handleFileSelect (e) {
     const file = e.target.files[0]
@@ -52,8 +78,8 @@ function FileUpload ({ runtime, ims }) {
       return
     }
 
-    if (file.size > 10 * 1024 * 1024) {
-      notify.error('File size exceeds 10MB limit')
+    if (file.size > maxFileSizeMB * 1024 * 1024) {
+      notify.error(`File size exceeds ${maxFileSizeMB}MB limit`)
       return
     }
 
@@ -110,9 +136,9 @@ function FileUpload ({ runtime, ims }) {
     }
     setPreviewRows(rows)
 
-    // Auto-suggest entity name from file name
-    const baseName = fileName.replace('.csv', '').toLowerCase().replace(/[^a-z0-9-]/g, '-')
-    if (!entityName) setEntityName(baseName)
+    // Auto-suggest master name from file name
+    const baseName = fileName.replace('.csv', '').toLowerCase().replace(/[^a-z0-9_]/g, '_').replace(/^[^a-z]+/, '').replace(/_+/g, '_')
+    if (!masterName) setMasterName(baseName)
     if (!displayName) setDisplayName(fileName.replace('.csv', ''))
   }
 
@@ -147,7 +173,7 @@ function FileUpload ({ runtime, ims }) {
 
       const params = {
         csvContent,
-        entityName,
+        masterName,
         displayName,
         description,
         primaryKey,
@@ -155,13 +181,21 @@ function FileUpload ({ runtime, ims }) {
         crudEnabled,
         queryableFields,
         requiredFields,
-        facetableFields
+        facetableFields,
+        recordAudit: {
+          enabled: auditCreatedAt || auditUpdatedAt || auditCreatedBy || auditUpdatedBy,
+          createdAt: auditCreatedAt,
+          updatedAt: auditUpdatedAt,
+          createdBy: auditCreatedBy,
+          updatedBy: auditUpdatedBy
+        }
       }
 
       const res = await uploadFile(params, ims)
       setResult(res)
       setStep(7)
-      notify.success(`Entity "${displayName}" published successfully with ${res.recordCount || 0} records`)
+      notify.success(`Master "${displayName}" published successfully with ${res.recordCount || 0} records`)
+      clearSwrCache() // invalidate all SWR caches after upload
     } catch (e) {
       setError(e.message)
       notify.error(`Upload failed: ${e.message}`)
@@ -233,7 +267,7 @@ function FileUpload ({ runtime, ims }) {
               <div className='mdm-dropzone__prompt'>
                 <div className='mdm-dropzone__icon'>📄</div>
                 <Text><strong>Drop CSV file here</strong></Text>
-                <Text UNSAFE_className='mdm-text-muted'>or click to browse • Max 10MB</Text>
+                <Text UNSAFE_className='mdm-text-muted'>or click to browse • Max {maxFileSizeMB}MB</Text>
               </div>
             )}
           </div>
@@ -272,24 +306,24 @@ function FileUpload ({ runtime, ims }) {
           </Well>
           <Flex justifyContent='space-between' marginTop='size-200'>
             <Button variant='secondary' onPress={() => setStep(1)}>Back</Button>
-            <Button variant='cta' onPress={() => setStep(3)}>Next: Configure Entity</Button>
+            <Button variant='cta' onPress={() => setStep(3)}>Next: Configure Master</Button>
           </Flex>
         </View>
       )}
 
-      {/* Step 3: Entity Configuration */}
+      {/* Step 3: Master Configuration */}
       {step === 3 && (
         <View>
-          <Heading level={3} marginBottom='size-200'>Step 3: Configure Entity</Heading>
+          <Heading level={3} marginBottom='size-200'>Step 3: Configure Master</Heading>
           <Well>
             <Flex direction='column' gap='size-200'>
-              <TextField label='Entity Name' value={entityName} onChange={setEntityName}
-                description='Lowercase, alphanumeric with hyphens or underscores (e.g., product-master)' isRequired />
+              <TextField label='Master Name' value={masterName} onChange={setMasterName}
+                description='Lowercase, alphanumeric with underscores only (e.g., product_master)' isRequired />
               <TextField label='Display Name' value={displayName} onChange={setDisplayName} isRequired />
               <TextArea label='Description' value={description} onChange={setDescription} />
               <Picker label='Primary Key Column (optional)' selectedKey={primaryKey} onSelectionChange={setPrimaryKey}
-                description='If not selected, an auto-generated entity_id will be used'>
-                <Item key=''>None (auto-generate entity_id)</Item>
+                description='If not selected, an auto-generated master_id will be used'>
+                <Item key=''>None (auto-generate master_id)</Item>
                 {headers.map(h => <Item key={h}>{h}</Item>)}
               </Picker>
               <Picker label='Visibility' selectedKey={visibility} onSelectionChange={setVisibility}>
@@ -299,11 +333,29 @@ function FileUpload ({ runtime, ims }) {
               <Checkbox isSelected={crudEnabled} onChange={setCrudEnabled}>
                 Enable CRUD Operations
               </Checkbox>
+
+              <Divider size='S' marginY='size-100' />
+              <Text UNSAFE_style={{ fontWeight: 'bold' }}>Record-Level Audit Fields</Text>
+              <Text UNSAFE_style={{ fontSize: '12px', color: 'var(--spectrum-global-color-gray-600)' }}>
+                Select which system audit columns to add to each record. This cannot be changed after master creation.
+              </Text>
+              <Checkbox isSelected={auditCreatedAt} onChange={setAuditCreatedAt}>
+                _createdAt — Initial insert timestamp
+              </Checkbox>
+              <Checkbox isSelected={auditUpdatedAt} onChange={setAuditUpdatedAt}>
+                _updatedAt — Last update timestamp
+              </Checkbox>
+              <Checkbox isSelected={auditCreatedBy} onChange={setAuditCreatedBy}>
+                _createdBy — User/partner who created the record
+              </Checkbox>
+              <Checkbox isSelected={auditUpdatedBy} onChange={setAuditUpdatedBy}>
+                _updatedBy — User/partner who last updated the record
+              </Checkbox>
             </Flex>
           </Well>
           <Flex justifyContent='space-between' marginTop='size-200'>
             <Button variant='secondary' onPress={() => setStep(2)}>Back</Button>
-            <Button variant='cta' isDisabled={!entityName} onPress={() => setStep(4)}>
+            <Button variant='cta' isDisabled={!masterName} onPress={() => setStep(4)}>
               Next: Define Schema
             </Button>
           </Flex>
@@ -316,11 +368,11 @@ function FileUpload ({ runtime, ims }) {
           <Heading level={3} marginBottom='size-200'>Step 4: Define Schema</Heading>
           <Well>
             <CheckboxGroup label='Queryable Fields (can be used as API query params)' value={queryableFields} onChange={setQueryableFields}>
-              {headers.map(h => <Checkbox key={h} value={h}>{h}</Checkbox>)}
+              {headers.filter(h => !SYSTEM_FIELDS.includes(h)).map(h => <Checkbox key={h} value={h}>{h}</Checkbox>)}
             </CheckboxGroup>
             <Divider marginY='size-200' />
             <CheckboxGroup label='Required Fields' value={requiredFields} onChange={setRequiredFields}>
-              {headers.map(h => <Checkbox key={h} value={h}>{h}</Checkbox>)}
+              {headers.filter(h => !SYSTEM_FIELDS.includes(h)).map(h => <Checkbox key={h} value={h}>{h}</Checkbox>)}
             </CheckboxGroup>
           </Well>
           <Flex justifyContent='space-between' marginTop='size-200'>
@@ -340,7 +392,7 @@ function FileUpload ({ runtime, ims }) {
           </Text>
           <Well>
             <CheckboxGroup label='Facetable Fields (will generate aggregation counts in API responses)' value={facetableFields} onChange={setFacetableFields}>
-              {headers.map(h => <Checkbox key={h} value={h}>{h}</Checkbox>)}
+              {headers.filter(h => !SYSTEM_FIELDS.includes(h)).map(h => <Checkbox key={h} value={h}>{h}</Checkbox>)}
             </CheckboxGroup>
             {facetableFields.length > 0 && (
               <View marginTop='size-200'>
@@ -366,31 +418,41 @@ function FileUpload ({ runtime, ims }) {
           <Heading level={3} marginBottom='size-200'>Step 6: Review & Publish</Heading>
           <Well>
             <Flex direction='column' gap='size-100'>
-              <Text><strong>Entity Name:</strong> {entityName}</Text>
+              <Text><strong>Master Name:</strong> {masterName}</Text>
               <Text><strong>Display Name:</strong> {displayName}</Text>
               <Text><strong>Description:</strong> {description || '(none)'}</Text>
-              <Text><strong>Primary Key:</strong> {primaryKey || 'entity_id (auto-generated)'}</Text>
+              <Text><strong>Primary Key:</strong> {primaryKey || 'master_id (auto-generated)'}</Text>
               <Text><strong>Visibility:</strong> {visibility}</Text>
               <Text><strong>CRUD Enabled:</strong> {crudEnabled ? 'Yes' : 'No'}</Text>
+              <Text><strong>Record Audit Fields:</strong> {[
+                auditCreatedAt && '_createdAt',
+                auditUpdatedAt && '_updatedAt',
+                auditCreatedBy && '_createdBy',
+                auditUpdatedBy && '_updatedBy'
+              ].filter(Boolean).join(', ') || '(none)'}</Text>
               <Text><strong>Queryable Fields:</strong> {queryableFields.join(', ') || '(none)'}</Text>\n              <Text><strong>Required Fields:</strong> {requiredFields.join(', ') || '(none)'}</Text>
               <Text><strong>Facetable Fields:</strong> {facetableFields.join(', ') || '(none)'}</Text>
               <Text><strong>Total Columns:</strong> {headers.length}</Text>
               <Text><strong>Preview Rows:</strong> {previewRows.length}</Text>
               <Divider marginY='size-200' />
-              <Heading level={4}>Generated API Endpoints:</Heading>
-              <Text><code>GET /api/mdm/{entityName}</code></Text>
-              <Text><code>GET /api/mdm/{entityName}/:id</code></Text>
-              {crudEnabled && (
-                <>
-                  <Text><code>POST /api/mdm/{entityName}</code></Text>
-                  <Text><code>PUT /api/mdm/{entityName}/:id</code></Text>
-                  <Text><code>PATCH /api/mdm/{entityName}/:id</code></Text>
-                  <Text><code>DELETE /api/mdm/{entityName}/:id</code></Text>
-                  <Text><code>POST /api/mdm/{entityName}/bulk</code></Text>
-                  <Text><code>POST /api/mdm/{entityName}/full-update</code></Text>
-                  <Text><code>POST /api/mdm/{entityName}/delta-update</code></Text>
-                </>
-              )}
+              <Heading level={4}>API Mesh Operations:</Heading>
+              <Text UNSAFE_style={{ fontSize: '13px', color: '#6e6e6e', marginBottom: '8px' }}>All operations are available via the API Mesh GraphQL endpoint.</Text>
+              <View UNSAFE_style={{ fontFamily: 'monospace', fontSize: '13px', lineHeight: '1.8' }}>
+                <Text><strong>Queries</strong> (public, cached):</Text>
+                <Text><code>{`mdmQuery(master: "${masterName || 'master'}", page: 1, pageSize: 25)`}</code></Text>
+                <Text><code>{`mdmRecord(master: "${masterName || 'master'}", id: "...")`}</code></Text>
+                <Text><code>{`mdmFacets(master: "${masterName || 'master'}", values: "true")`}</code></Text>
+                {crudEnabled && visibility === 'public' && (
+                  <>
+                    <Divider size='S' marginY='size-100' />
+                    <Text><strong>Mutations</strong> (requires partner credentials, not cached):</Text>
+                    <Text><code>{`mdmCreate(master: "${masterName || 'master'}", data: "{...}")`}</code></Text>
+                    <Text><code>{`mdmUpdate(master: "${masterName || 'master'}", id: "...", data: "{...}")`}</code></Text>
+                    <Text><code>{`mdmPatch(master: "${masterName || 'master'}", id: "...", data: "{...}")`}</code></Text>
+                    <Text><code>{`mdmDelete(master: "${masterName || 'master'}", id: "...")`}</code></Text>
+                  </>
+                )}
+              </View>
             </Flex>
           </Well>
           <Flex justifyContent='space-between' marginTop='size-200'>
@@ -407,7 +469,7 @@ function FileUpload ({ runtime, ims }) {
         <View>
           <div className='mdm-success-state'>
             <div className='mdm-success-state__icon'>✓</div>
-            <Heading level={2}>Entity Published Successfully</Heading>
+            <Heading level={2}>Master Published Successfully</Heading>
             <Text UNSAFE_className='mdm-text-muted' marginBottom='size-200'>
               Your master data is now available via the API Mesh
             </Text>
@@ -415,8 +477,8 @@ function FileUpload ({ runtime, ims }) {
           <View UNSAFE_className='mdm-card'>
             <div className='mdm-detail-list'>
               <div className='mdm-detail-list__row'>
-                <span className='mdm-detail-list__label'>Entity</span>
-                <span className='mdm-detail-list__value'>{result.entity}</span>
+                <span className='mdm-detail-list__label'>Master</span>
+                <span className='mdm-detail-list__value'>{result.master || result.entity}</span>
               </div>
               <div className='mdm-detail-list__row'>
                 <span className='mdm-detail-list__label'>Version</span>
@@ -433,9 +495,9 @@ function FileUpload ({ runtime, ims }) {
             </div>
           </View>
           <Flex gap='size-200' marginTop='size-300' justifyContent='center'>
-            <Button variant='accent' onPress={() => navigate(`/files/${result.entity}`)}>View Entity</Button>
-            <Button variant='secondary' onPress={() => navigate(`/files/${result.entity}/records`)}>View Records</Button>
-            <Button variant='secondary' onPress={() => navigate('/files')}>All Entities</Button>
+            <Button variant='accent' onPress={() => navigate(`/masters/${result.master || result.entity}`)}>View Master</Button>
+            <Button variant='secondary' onPress={() => navigate(`/masters/${result.master || result.entity}/records`)}>View Records</Button>
+            <Button variant='secondary' onPress={() => navigate('/masters')}>All Masters</Button>
             <Button variant='secondary' onPress={() => { setStep(1); setCsvContent(''); setResult(null) }}>Upload Another</Button>
           </Flex>
         </View>

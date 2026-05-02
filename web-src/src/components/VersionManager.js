@@ -8,7 +8,7 @@ import { fetchVersions, rollbackVersion } from './actionInvoker'
 import { useNotifications } from './NotificationProvider'
 
 function VersionManager ({ runtime, ims }) {
-  const { entity } = useParams()
+  const { master } = useParams()
   const navigate = useNavigate()
   const notify = useNotifications()
   const [versions, setVersions] = useState([])
@@ -18,12 +18,12 @@ function VersionManager ({ runtime, ims }) {
 
   useEffect(() => {
     loadVersions()
-  }, [entity])
+  }, [master])
 
   async function loadVersions () {
     try {
       setLoading(true)
-      const result = await fetchVersions(entity, ims)
+      const result = await fetchVersions(master, ims)
       setVersions(result.versions || [])
       setActiveVersionId(result.activeVersionId || '')
       setError(null)
@@ -38,7 +38,7 @@ function VersionManager ({ runtime, ims }) {
     try {
       setLoading(true)
       setError(null)
-      const result = await rollbackVersion(entity, versionId, ims)
+      const result = await rollbackVersion(master, versionId, ims)
       notify.success(`Rolled back to version '${versionId}'. New version: ${result.newVersionId}`)
       await loadVersions()
     } catch (e) {
@@ -63,12 +63,12 @@ function VersionManager ({ runtime, ims }) {
     <View UNSAFE_className='mdm-page'>
       <Flex justifyContent='space-between' alignItems='center' marginBottom='size-300'>
         <View>
-          <Heading level={1} UNSAFE_className='mdm-page__title'>Versions: {entity}</Heading>
+          <Heading level={1} UNSAFE_className='mdm-page__title'>Versions: {master}</Heading>
           <Text UNSAFE_className='mdm-page__subtitle'>
             Active: {activeVersionId} • {versions.length} versions total
           </Text>
         </View>
-        <Button variant='secondary' onPress={() => navigate(`/files/${entity}`)}>Back to Entity</Button>
+        <Button variant='secondary' onPress={() => navigate(`/masters/${master}`)}>Back to Master</Button>
       </Flex>
 
       {error && (
