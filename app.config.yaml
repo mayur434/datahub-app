@@ -1,6 +1,8 @@
 application:
   actions: actions
   web: web-src
+  hooks:
+    post-app-deploy: ./hooks/post-app-deploy.js
   runtimeManifest:
     database:
       auto-provision: true
@@ -23,13 +25,14 @@ application:
           API_MESH_CACHE_TTL: $API_MESH_CACHE_TTL
           # Schema
           MAX_SCHEMA_FIELDS: $MAX_SCHEMA_FIELDS
-          # Versioning
-          MAX_VERSIONS_PER_ENTITY: $MAX_VERSIONS_PER_ENTITY
           # Performance
           BULK_BATCH_SIZE: $BULK_BATCH_SIZE
           QUERY_TIMEOUT: $QUERY_TIMEOUT
           # Audit
           AUDIT_RETENTION_DAYS: $AUDIT_RETENTION_DAYS
+          ARCHIVE_RETENTION_DAYS: $ARCHIVE_RETENTION_DAYS
+          # User Management
+          INITIAL_ADMIN_EMAIL: $INITIAL_ADMIN_EMAIL
         actions:
           generic:
             function: actions/generic/index.js
@@ -161,22 +164,6 @@ application:
               require-adobe-auth: true
               final: true
               include-ims-credentials: true
-          version-list:
-            function: actions/version-list/index.js
-            web: 'yes'
-            runtime: nodejs:22
-            annotations:
-              require-adobe-auth: true
-              final: true
-              include-ims-credentials: true
-          version-rollback:
-            function: actions/version-rollback/index.js
-            web: 'yes'
-            runtime: nodejs:22
-            annotations:
-              require-adobe-auth: true
-              final: true
-              include-ims-credentials: true
           visibility-update:
             function: actions/visibility-update/index.js
             web: 'yes'
@@ -249,33 +236,16 @@ application:
               require-adobe-auth: true
               final: true
               include-ims-credentials: true
-    triggers:
-      audit-cleanup-daily:
-        feed: /whisk.system/alarms/alarm
-        inputs:
-          cron: 0 2 * * *
-      archive-run-daily:
-        feed: /whisk.system/alarms/alarm
-        inputs:
-          cron: 0 3 * * *
-      metrics-refresh:
-        feed: /whisk.system/alarms/alarm
-        inputs:
-          cron: '*/15 * * * *'
-      dashboard-refresh:
-        feed: /whisk.system/alarms/alarm
-        inputs:
-          cron: '*/15 * * * *'
-    rules:
-      audit-cleanup-rule:
-        trigger: audit-cleanup-daily
-        action: pimapp/audit-cleanup
-      archive-run-rule:
-        trigger: archive-run-daily
-        action: pimapp/archive-run
-      metrics-refresh-rule:
-        trigger: metrics-refresh
-        action: pimapp/infra-metrics
-      dashboard-refresh-rule:
-        trigger: dashboard-refresh
-        action: pimapp/dashboard
+          user-management:
+            function: actions/user-management/index.js
+            web: 'yes'
+            runtime: nodejs:22
+            annotations:
+              require-adobe-auth: true
+              final: true
+              include-ims-credentials: true
+    # ──────────────────────────────────────────────────────────────────────
+    # Alarm triggers & rules are deployed by the post-app-deploy hook
+    # (hooks/post-app-deploy.js) because `aio app deploy` only processes
+    # the packages section.  See that file for the full configuration.
+    # ──────────────────────────────────────────────────────────────────────

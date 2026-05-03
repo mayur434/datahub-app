@@ -5,7 +5,7 @@
  */
 
 const { v4: uuidv4 } = require('uuid')
-const { getDbClient, safeFindOne, COLLECTIONS, getMasterCollectionName, validateMasterName, parseCSV, validateCSV, createVersion, createAuditLog, createResponse, createErrorResponse, validateIMSToken, getUserFromParams, checkStorageGuardrails, estimateFileSizeMB, getEnvConfig, getCachedSettings, injectRecordAuditFields, getTimezoneDate } = require('../mdm-utils')
+const { getDbClient, safeFindOne, COLLECTIONS, getMasterCollectionName, validateMasterName, parseCSV, validateCSV, createAuditLog, createResponse, createErrorResponse, validateIMSToken, getUserFromParams, checkStorageGuardrails, estimateFileSizeMB, getEnvConfig, getCachedSettings, injectRecordAuditFields, getTimezoneDate, enforceAppPermission } = require('../mdm-utils')
 
 async function main (params) {
   if (params.__ow_method === 'options') return createResponse({})
@@ -16,6 +16,11 @@ async function main (params) {
   let client
   try {
     client = await getDbClient(params)
+
+    // App-level RBAC
+    const appPerm = await enforceAppPermission(client, params, 'file-upload')
+    if (!appPerm.allowed) return appPerm.response
+
     const user = await getUserFromParams(params, client)
     const { csvContent, displayName, visibility, crudEnabled, allowedOperations, queryableFields, requiredFields, facetableFields, facetsConfig, archivalConfig, schema, description, recordAudit } = params
     const masterName = params.masterName || params.entityName
@@ -94,11 +99,6 @@ async function main (params) {
 
     const collectionName = getMasterCollectionName(masterName)
 
-    // Create version
-    const version = await createVersion(client, masterName, 'initial-upload', user, {
-      inserted: records.length, updated: 0, deleted: 0
-    }, records.length)
-
     // Create metadata document
     const fileMetadata = {
       masterName,
@@ -133,7 +133,7 @@ async function main (params) {
         returnWithQuery: true,
         maxValuesPerFacet: 100
       },
-      activeVersionId: version.versionId,
+      activeVersionId: null,
       schemaVersionId: 'schema-v1',
       recordCount: records.length,
 
@@ -143,7 +143,7 @@ async function main (params) {
         writeEnabled: crudEnabled !== false,
         bulkEnabled: true
       },
-      governance: { owner: user, businessUnit: '', retentionPolicy: 'last-10-versions' },
+      governance: { owner: user, businessUnit: '' },
       recordAudit: {
         enabled: recordAudit ? !!recordAudit.enabled : false,
         createdAt: recordAudit ? !!recordAudit.createdAt : false,
@@ -180,7 +180,6 @@ async function main (params) {
 
       return {
         primaryKey: record[primaryKey],
-        versionId: version.versionId,
         data: record,
         status: 'active',
         deleted: false,
@@ -213,7 +212,6 @@ async function main (params) {
       operation: 'upload',
       actor: user,
       status: 'success',
-      afterVersion: version.versionId,
       affectedRecords: records.length,
 
     })
@@ -222,7 +220,6 @@ async function main (params) {
       status: 'success',
       master: masterName,
       collectionName,
-      versionId: version.versionId,
       recordCount: records.length,
       schema: finalSchema,
       api: fileMetadata.api,

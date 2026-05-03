@@ -248,7 +248,7 @@ function OverviewTab ({ overview }) {
       {/* KPI Row */}
       <div className='admin-kpi-grid'>
         <KPIMetric title='Storage Used' value={`${storage.totalEstimatedSizeMB || 0} MB`} subtitle={`of ${storage.maxStorageMB || 250} MB`} severity={storage.status} tooltip='Total estimated disk space consumed by all documents across every collection in DocDB.' />
-        <KPIMetric title='Documents' value={(storage.totalDocuments || 0).toLocaleString()} subtitle={`of ${(storage.maxDocuments || 500000).toLocaleString()}`} severity={storage.documentsUsagePercent > 75 ? 'warning' : 'healthy'} tooltip='Total number of documents (records, metadata, audit logs, versions, settings) stored in DocDB.' />
+        <KPIMetric title='Documents' value={(storage.totalDocuments || 0).toLocaleString()} subtitle={`of ${(storage.maxDocuments || 500000).toLocaleString()}`} severity={storage.documentsUsagePercent > 75 ? 'warning' : 'healthy'} tooltip='Total number of documents (records, metadata, audit logs, settings) stored in DocDB.' />
         <KPIMetric title='Throughput (30d)' value={(usage.totalOperations || 0).toLocaleString()} subtitle={`R:${usage.readOperations || 0} / W:${usage.writeOperations || 0}`} severity='info' tooltip='Total read + write API operations recorded in the last 30 days. R = reads (queries, lists), W = writes (uploads, updates, deletes).' />
         <KPIMetric title='Success Rate' value={`${failureSummary.overallSuccessRate || 100}%`} subtitle={`${failureSummary.totalFailures || 0} failures in 30d`} severity={failureSummary.failureRate > 5 ? 'warning' : 'healthy'} tooltip='Percentage of all operations that completed without error in the last 30 days.' />
       </div>
@@ -375,7 +375,6 @@ function StorageTab ({ storage }) {
               <tr>
                 <th>Master</th>
                 <th style={{ textAlign: 'right' }}>Records</th>
-                <th style={{ textAlign: 'right' }}>Versions</th>
                 <th style={{ textAlign: 'right' }}>Fields</th>
                 <th style={{ textAlign: 'right' }}>Est. Storage (MB)</th>
                 <th>Visibility</th>
@@ -390,7 +389,6 @@ function StorageTab ({ storage }) {
                     <span style={{ fontSize: '11px', color: '#888' }}>{e.masterName || e.entityName}</span>
                   </td>
                   <td style={{ textAlign: 'right' }}>{(e.recordCount || 0).toLocaleString()}</td>
-                  <td style={{ textAlign: 'right' }}>{e.versionCount}</td>
                   <td style={{ textAlign: 'right' }}>{e.schemaFieldCount}</td>
                   <td style={{ textAlign: 'right' }}>{e.estimatedStorageMB.toFixed(3)}</td>
                   <td>
@@ -830,11 +828,9 @@ function UsageTab ({ usage }) {
           <DetailRow label='Current Storage' value={`${storageProj.currentStorageMB || 0} / ${storageProj.maxStorageMB || 250} MB`} tooltip='Current estimated storage consumption versus the maximum allowed by your DocDB package.' />
           <DetailRow label='Monthly Growth' value={`${storageProj.projectedMonthlyGrowthMB || 0} MB`} tooltip='Estimated storage growth per month based on recent document creation and audit log activity.' />
           <DetailRow label='Months Until Full' value={storageProj.monthsUntilFull != null ? storageProj.monthsUntilFull : '∞'} tooltip='Estimated months before storage reaches capacity at the current growth rate. ∞ means negligible growth.' />
-          <DetailRow label='Documents' value={`${(storageProj.currentDocuments || 0).toLocaleString()} / ${(storageProj.maxDocuments || 500000).toLocaleString()}`} tooltip='Current total documents (records + metadata + audit + versions + settings) versus the package maximum.' />
+          <DetailRow label='Documents' value={`${(storageProj.currentDocuments || 0).toLocaleString()} / ${(storageProj.maxDocuments || 500000).toLocaleString()}`} tooltip='Current total documents (records + metadata + audit + settings) versus the package maximum.' />
           <DetailRow label='Audit Growth' value={`${storageProj.auditGrowthPerDay || 0} docs/day`} tooltip='Average number of audit log entries created per day. High values may indicate you should enable audit cleanup.' />
           <DetailRow label='Audit Budget Left' value={storageProj.daysUntilAuditBudgetExhausted != null ? `${storageProj.daysUntilAuditBudgetExhausted} days` : '∞'} tooltip='Estimated days before audit logs alone consume 10% of total document capacity. Enable audit cleanup to manage this.' />
-          <DetailRow label='Versions Stored' value={`${storageProj.versionDocsTotal || 0} (avg ${storageProj.avgVersionsPerMaster || 0}/master)`} tooltip='Total version history documents stored, with the average number of versions per master in parentheses.' />
-          <DetailRow label='Max Versions/Master' value={storageProj.maxVersionsPerMaster || 50} tooltip='Maximum version snapshots retained per master. Older versions beyond this limit are automatically pruned.' />
         </div>
       </View>
 
@@ -875,8 +871,8 @@ function ConfigTab ({ overview }) {
         <Heading level={4} marginBottom='size-200'>DocDB Package Limits</Heading>
         <div className='admin-detail-grid'>
           <DetailRow label='Max Storage' value={`${storage.maxStorageMB || 250} MB`} tooltip='Maximum storage capacity allocated to your DocDB instance by your App Builder package tier.' />
-          <DetailRow label='Max Documents' value={(storage.maxDocuments || 500000).toLocaleString()} tooltip='Maximum total documents (records + metadata + audit + versions) allowed in your DocDB instance.' />
-          <DetailRow label='Collections' value={`${storage.activeCollections || 0} active`} tooltip='Number of DocDB collections currently in use (e.g. records, metadata, audit, versions, settings).' />
+          <DetailRow label='Max Documents' value={(storage.maxDocuments || 500000).toLocaleString()} tooltip='Maximum total documents (records + metadata + audit) allowed in your DocDB instance.' />
+          <DetailRow label='Collections' value={`${storage.activeCollections || 0} active`} tooltip='Number of DocDB collections currently in use (e.g. records, metadata, audit, settings).' />
           <DetailRow label='DB Region' value='APAC' tooltip='Geographic region where your DocDB instance is deployed. Affects latency for users in different regions.' />
         </div>
         <Well marginTop='size-200'>
@@ -912,7 +908,7 @@ function ConfigTab ({ overview }) {
           <DetailRow label='Action Timeout' value='60s' tooltip='Maximum execution time per action invocation. Long-running operations (large uploads, bulk updates) must complete within this window.' />
           <DetailRow label='Authentication' value='IMS (require-adobe-auth)' tooltip='All write operations require a valid Adobe IMS token. Public read actions (mdm-data, mdm-facets) bypass auth.' />
           <DetailRow label='Public API Actions' value='mdm-data, mdm-facets' tooltip='Actions accessible without authentication — used by API Mesh for public data consumption.' />
-          <DetailRow label='Database' value='@adobe/aio-lib-db (DocDB)' tooltip='Adobe-managed document database. Stores all records, metadata, audit logs, versions, and settings.' />
+          <DetailRow label='Database' value='@adobe/aio-lib-db (DocDB)' tooltip='Adobe-managed document database. Stores all records, metadata, audit logs, and settings.' />
         </div>
       </View>
     </View>

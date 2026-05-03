@@ -6,7 +6,9 @@ import Settings from '@spectrum-icons/workflow/Settings'
 import User from '@spectrum-icons/workflow/User'
 import Help from '@spectrum-icons/workflow/Help'
 
-function HeaderBar ({ ims }) {
+import ShowMenu from '@spectrum-icons/workflow/ShowMenu'
+
+function HeaderBar ({ ims, onToggleSidebar, isMobile }) {
   const location = useLocation()
   const navigate = useNavigate()
 
@@ -51,8 +53,15 @@ function HeaderBar ({ ims }) {
       UNSAFE_className='mdm-header'
     >
       <Flex justifyContent='space-between' alignItems='center'>
-        {/* Breadcrumbs */}
-        <nav className='mdm-breadcrumbs' aria-label='Breadcrumb'>
+        <Flex alignItems='center' gap='size-100'>
+          {/* Mobile hamburger toggle */}
+          {isMobile && (
+            <ActionButton isQuiet aria-label='Toggle navigation' onPress={onToggleSidebar} UNSAFE_className='mdm-hamburger-btn'>
+              <ShowMenu />
+            </ActionButton>
+          )}
+          {/* Breadcrumbs */}
+          <nav className='mdm-breadcrumbs' aria-label='Breadcrumb'>
           {crumbs.map((crumb, idx) => (
             <React.Fragment key={idx}>
               {idx > 0 && <span className='mdm-breadcrumbs__separator'>/</span>}
@@ -66,6 +75,7 @@ function HeaderBar ({ ims }) {
             </React.Fragment>
           ))}
         </nav>
+        </Flex>
 
         {/* Right side: user info & actions */}
         <Flex alignItems='center' gap='size-100'>

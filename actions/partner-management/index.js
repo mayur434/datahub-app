@@ -11,7 +11,7 @@
  */
 
 const crypto = require('crypto')
-const { getDbClient, safeFindOne, COLLECTIONS, createAuditLog, createResponse, createErrorResponse, validateIMSToken, getUserFromParams, getTimezoneDate } = require('../mdm-utils')
+const { getDbClient, safeFindOne, COLLECTIONS, createAuditLog, createResponse, createErrorResponse, validateIMSToken, getUserFromParams, getTimezoneDate, enforceAppPermission } = require('../mdm-utils')
 
 /**
  * Generate a secure random partner key (48 chars, prefixed).
@@ -47,6 +47,11 @@ async function main (params) {
   let client
   try {
     client = await getDbClient(params)
+
+    // App-level RBAC
+    const appPerm = await enforceAppPermission(client, params, 'partner-management')
+    if (!appPerm.allowed) return appPerm.response
+
     const user = await getUserFromParams(params, client)
     const partnersCol = await client.collection(COLLECTIONS.PARTNERS)
 

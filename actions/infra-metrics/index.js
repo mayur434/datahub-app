@@ -16,14 +16,13 @@
  *   - overview:   Combined summary of all metrics (default)
  */
 
-const { getDbClient, safeFindOne, COLLECTIONS, createResponse, createErrorResponse, validateIMSToken, getUserFromParams, getEnvConfig, getStateClient, getCachedSettings, getTimezoneDate } = require('../mdm-utils')
+const { getDbClient, safeFindOne, COLLECTIONS, createResponse, createErrorResponse, validateIMSToken, getUserFromParams, getEnvConfig, getStateClient, getCachedSettings, getTimezoneDate, enforceAppPermission } = require('../mdm-utils')
 
 const SETTINGS_DOC_ID = 'app-settings'
 const METRICS_CACHE_KEY = 'metrics-cache'
 
 const AVG_DOC_SIZES = {
   [COLLECTIONS.METADATA]: 2048,
-  [COLLECTIONS.VERSIONS]: 512,
   [COLLECTIONS.AUDIT]: 384,
   [COLLECTIONS.SETTINGS]: 2048,
   [COLLECTIONS.ARCHIVES]: 1024,
@@ -35,17 +34,13 @@ const AVG_MASTER_DOC_SIZE = 1024
 async function main (params) {
   if (params.__ow_method === 'options') return createResponse({})
 
-  // Allow scheduled trigger invocations (no auth) for cache refresh jobs
-  const isScheduledRefresh = params.__ow_method === undefined && !params.__ow_headers
-  if (!isScheduledRefresh) {
-    const auth = validateIMSToken(params)
-    if (!auth.valid) return createErrorResponse(auth.error, 401)
-  }
+  const auth = validateIMSToken(params)
+  if (!auth.valid) return createErrorResponse(auth.error, 401)
 
   const env = getEnvConfig(params)
   const CACHE_TTL_SECONDS = env.metricsCacheTTLMinutes * 60
   const report = (params.report || 'overview').toLowerCase()
-  const forceRefresh = isScheduledRefresh || params.forceRefresh === true || params.forceRefresh === 'true'
+  const forceRefresh = params.forceRefresh === true || params.forceRefresh === 'true'
 
   const DEFAULT_TIER_LIMITS = {
     maxStorageMB: 250,
@@ -59,6 +54,11 @@ async function main (params) {
   let client
   try {
     client = await getDbClient(params)
+
+    // App-level RBAC
+    const appPerm = await enforceAppPermission(client, params, 'infra-metrics')
+    if (!appPerm.allowed) return appPerm.response
+
     const settings = await loadSettings(client)
     const tierLimits = { ...DEFAULT_TIER_LIMITS, ...(settings.guardrails || {}), ...(settings.infrastructure || {}) }
 
@@ -85,7 +85,7 @@ async function main (params) {
         result = { analytics: await collectAnalytics(client, params) }
         break
       case 'usage':
-        result = { usage: await collectUsageMetrics(client, settings, tierLimits) }
+        result = { usage: await collectUsageMetrics(client, settings, tierLimits, env) }
         break
       case 'overview':
       default:
@@ -197,14 +197,6 @@ async function collectEntityBreakdown (client) {
     const allMeta = await metaCol.find({}).toArray()
     const entities = allMeta.filter(m => m.status !== 'deleted')
 
-    const versionCol = await client.collection(COLLECTIONS.VERSIONS)
-    const allVersions = await versionCol.find({}).toArray()
-    const versionsByEntity = {}
-    for (const v of allVersions) {
-      if (!versionsByEntity[v.masterName]) versionsByEntity[v.masterName] = 0
-      versionsByEntity[v.masterName]++
-    }
-
     const auditCol = await client.collection(COLLECTIONS.AUDIT)
     const allAudit = await auditCol.find({}).toArray()
     const auditByEntity = {}
@@ -217,17 +209,14 @@ async function collectEntityBreakdown (client) {
 
     return entities.map(e => {
       const recordCount = e.recordCount || 0
-      const versionCount = versionsByEntity[e.masterName] || 0
       const auditCount = auditByEntity[e.masterName] || 0
       const estimatedRecordBytes = recordCount * AVG_MASTER_DOC_SIZE
-      const estimatedVersionBytes = versionCount * (AVG_DOC_SIZES[COLLECTIONS.VERSIONS] || 512)
-      const totalBytes = estimatedRecordBytes + estimatedVersionBytes + (AVG_DOC_SIZES[COLLECTIONS.METADATA] || 2048)
+      const totalBytes = estimatedRecordBytes + (AVG_DOC_SIZES[COLLECTIONS.METADATA] || 2048)
 
       return {
         masterName: e.masterName,
         displayName: e.displayName || e.masterName,
         recordCount,
-        versionCount,
         auditLogCount: auditCount,
         schemaFieldCount: (e.schema || []).length,
         visibility: e.visibility || 'private',
@@ -294,26 +283,20 @@ async function collectGuardrailStatus (client, settings, tierLimits, env) {
 
   guardrails.push({
     id: 'rate-limit', name: 'API Rate Limit', category: 'api', severity: 'info',
-    current: api.rateLimitPerMinute || env.rateLimitPerMinute || 1000, limit: 100000, unit: 'req/min', usagePercent: 0,
-    message: `Configured: ${api.rateLimitPerMinute || env.rateLimitPerMinute || 1000} requests per minute`
-  })
-
-  guardrails.push({
-    id: 'version-retention', name: 'Max Versions Per Entity', category: 'config', severity: 'info',
-    current: versioning.maxVersionsPerEntity || env.maxVersionsPerEntity || 50, limit: 500, unit: 'versions', usagePercent: 0,
-    message: `Configured: ${versioning.maxVersionsPerEntity || env.maxVersionsPerEntity || 50} versions retained per entity`
+    current: env.rateLimitPerMinute, limit: 100000, unit: 'req/min', usagePercent: 0,
+    message: `Configured: ${env.rateLimitPerMinute} requests per minute`
   })
 
   guardrails.push({
     id: 'audit-retention', name: 'Audit Log Retention', category: 'config',
-    severity: audit.cleanupEnabled ? 'healthy' : 'warning',
-    current: audit.retentionDays || env.auditRetentionDays || 90, limit: 730, unit: 'days', usagePercent: 0,
-    message: audit.cleanupEnabled
-      ? `Cleanup active: ${audit.retentionDays || env.auditRetentionDays || 90} days retention`
-      : 'Audit cleanup disabled — logs accumulate indefinitely'
+    severity: (audit.enabled !== false) ? 'healthy' : 'warning',
+    current: env.auditRetentionDays, limit: 730, unit: 'days', usagePercent: 0,
+    message: (audit.enabled !== false)
+      ? `Auditing active: ${env.auditRetentionDays} days retention`
+      : 'Auditing disabled — no logs being written'
   })
 
-  const maxFields = dm.maxSchemaFields || env.maxSchemaFields || 100
+  const maxFields = env.maxSchemaFields
   for (const entity of storage.entities) {
     if (entity.schemaFieldCount > maxFields * 0.7) {
       guardrails.push({
@@ -469,7 +452,7 @@ async function collectAnalytics (client, params) {
 // USAGE METRICS
 // ============================================================
 
-async function collectUsageMetrics (client, settings, tierLimits) {
+async function collectUsageMetrics (client, settings, tierLimits, env) {
   const storage = await collectStorageMetrics(client, tierLimits)
   const auditCol = await client.collection(COLLECTIONS.AUDIT)
   const since = new Date()
@@ -506,7 +489,7 @@ async function collectUsageMetrics (client, settings, tierLimits) {
   const monthlyActivations = Math.ceil((recentLogs.length / daysCovered) * 30)
 
   const meshSettings = settings.api || {}
-  const meshCacheTTL = meshSettings.apiMeshCacheTTL || 300
+  const meshCacheTTL = env.apiMeshCacheTTL
   const meshCacheEfficiency = meshCacheTTL > 0 ? Math.min(95, 50 + meshCacheTTL / 10) : 0
 
   const metaCol = await client.collection(COLLECTIONS.METADATA)
@@ -519,10 +502,6 @@ async function collectUsageMetrics (client, settings, tierLimits) {
   const daysUntilAuditFull = auditGrowthPerDay > 0
     ? Math.floor((storage.summary.remainingDocuments * 0.3) / auditGrowthPerDay)
     : null
-
-  const versionTotal = storage.collections?.[COLLECTIONS.VERSIONS]?.documentCount || 0
-  const versionsPerEntity = activeMeta.length > 0 ? parseFloat((versionTotal / activeMeta.length).toFixed(1)) : 0
-  const maxVersionsPerEntity = settings.versioning?.maxVersionsPerEntity || 50
 
   const currentStorageMB = storage.summary.totalEstimatedSizeMB
   const projectedRecordsPerMonth = totalRecordsAffected > 0 ? Math.ceil((totalRecordsAffected / daysCovered) * 30) : 0
@@ -558,8 +537,8 @@ async function collectUsageMetrics (client, settings, tierLimits) {
     apiMesh: {
       cacheTTL: meshCacheTTL,
       estimatedCacheHitRate: `${meshCacheEfficiency}%`,
-      maxPageSize: meshSettings.maxPageSize || 100,
-      rateLimitPerMinute: meshSettings.rateLimitPerMinute || 1000,
+      maxPageSize: env.maxPageSize,
+      rateLimitPerMinute: env.rateLimitPerMinute,
       enableCORS: meshSettings.enableCORS !== false,
       corsOrigins: meshSettings.corsOrigins || '*',
       recommendation: meshCacheTTL < 60
@@ -574,35 +553,25 @@ async function collectUsageMetrics (client, settings, tierLimits) {
       currentDocuments: storage.summary.totalDocuments,
       maxDocuments: tierLimits.maxDocuments,
       auditGrowthPerDay, auditDocsTotal,
-      daysUntilAuditBudgetExhausted: daysUntilAuditFull,
-      versionDocsTotal: versionTotal,
-      avgVersionsPerEntity: versionsPerEntity,
-      maxVersionsPerEntity
+      daysUntilAuditBudgetExhausted: daysUntilAuditFull
     },
-    recommendations: generateRecommendations(storage, settings, monthlyActivations, auditGrowthPerDay, versionsPerEntity, meshCacheTTL)
+    recommendations: generateRecommendations(storage, settings, monthlyActivations, auditGrowthPerDay, meshCacheTTL)
   }
 }
 
-function generateRecommendations (storage, settings, monthlyActivations, auditGrowthPerDay, versionsPerEntity, cacheTTL) {
+function generateRecommendations (storage, settings, monthlyActivations, auditGrowthPerDay, cacheTTL) {
   const recs = []
   if (storage.summary.storageUsagePercent > 75) {
     recs.push({ severity: 'critical', area: 'storage', message: `Storage at ${storage.summary.storageUsagePercent}% capacity. Archive old data or enable audit cleanup to free space.` })
   }
   if (storage.summary.documentsUsagePercent > 75) {
-    recs.push({ severity: 'critical', area: 'documents', message: `Document count at ${storage.summary.documentsUsagePercent}% capacity. Consider pruning old versions or audit logs.` })
+    recs.push({ severity: 'critical', area: 'documents', message: `Document count at ${storage.summary.documentsUsagePercent}% capacity. Consider pruning audit logs.` })
   }
-  if (!settings.audit?.cleanupEnabled) {
-    recs.push({ severity: 'warning', area: 'audit', message: 'Audit log cleanup is disabled. Logs accumulate indefinitely and consume storage.' })
+  if (settings.audit?.enabled === false) {
+    recs.push({ severity: 'warning', area: 'audit', message: 'Auditing is disabled. No audit trail is being recorded.' })
   }
   if (auditGrowthPerDay > 100) {
     recs.push({ severity: 'warning', area: 'audit', message: `High audit log growth (${auditGrowthPerDay}/day). Enable cleanup or reduce retention period.` })
-  }
-  const versionCount = storage.collections?.[COLLECTIONS.VERSIONS]?.documentCount || 0
-  if (versionCount > 1000) {
-    recs.push({ severity: 'warning', area: 'versioning', message: `${versionCount} version documents stored. Consider reducing maxVersionsPerEntity to free space.` })
-  }
-  if (versionsPerEntity > 30) {
-    recs.push({ severity: 'info', area: 'versioning', message: `Avg ${versionsPerEntity} versions per entity. Lower retention if older versions are not needed.` })
   }
   if (monthlyActivations > 50000) {
     recs.push({ severity: 'info', area: 'performance', message: 'High activation volume. Ensure API Mesh CDN caching is optimized to reduce backend load.' })
@@ -625,11 +594,11 @@ async function collectOverview (client, settings, tierLimits, params) {
   const storage = await collectStorageMetrics(client, tierLimits)
   const guardrails = await collectGuardrailStatus(client, settings, tierLimits, env)
   const failures = await collectFailureReport(client, { days: 30 })
-  const usage = await collectUsageMetrics(client, settings, tierLimits)
+  const usage = await collectUsageMetrics(client, settings, tierLimits, env)
 
   const meshConfig = {
-    cacheTTL: settings.api?.apiMeshCacheTTL || env.apiMeshCacheTTL,
-    rateLimitPerMinute: settings.api?.rateLimitPerMinute || env.rateLimitPerMinute,
+    cacheTTL: env.apiMeshCacheTTL,
+    rateLimitPerMinute: env.rateLimitPerMinute,
     enableCORS: settings.api?.enableCORS !== false,
     corsOrigins: settings.api?.corsOrigins || '*',
     maxPageSize: settings.api?.maxPageSize || env.maxPageSize

@@ -4,7 +4,7 @@
  * Supports GET (read config) and POST (update config).
  */
 
-const { getDbClient, safeFindOne, COLLECTIONS, createAuditLog, createResponse, createErrorResponse, validateIMSToken, getUserFromParams, getEnvConfig, getCachedSettings, getTimezoneDate } = require('../mdm-utils')
+const { getDbClient, safeFindOne, COLLECTIONS, createAuditLog, createResponse, createErrorResponse, validateIMSToken, getUserFromParams, getEnvConfig, getCachedSettings, getTimezoneDate, enforceAppPermission } = require('../mdm-utils')
 
 async function main (params) {
   if (params.__ow_method === 'options') return createResponse({})
@@ -18,6 +18,11 @@ async function main (params) {
     if (!entity) return createErrorResponse('Missing required parameter: master')
 
     client = await getDbClient(params)
+
+    // App-level RBAC
+    const appPerm = await enforceAppPermission(client, params, 'archive-config')
+    if (!appPerm.allowed) return appPerm.response
+
     const user = await getUserFromParams(params, client)
     const metaCol = await client.collection(COLLECTIONS.METADATA)
 

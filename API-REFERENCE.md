@@ -2,10 +2,12 @@
 
 All operations are exposed via **Adobe API Mesh** as a single GraphQL endpoint.
 
+> **Tip:** Import the [Postman Collection](PIM-API.postman_collection.json) for ready-to-run requests with example responses.
+
 ## Endpoint
 
 ```
-POST https://edge-sandbox-graph.adobe.io/api/114b5a31-5c7f-4584-81eb-22241fc6411a/graphql
+POST https://edge-sandbox-graph.adobe.io/api/<YOUR_MESH_ID>/graphql
 ```
 
 ## Authentication
@@ -14,8 +16,8 @@ All **write operations** (create, update, patch, delete) require partner credent
 
 | Header | Description |
 |--------|-------------|
-| `x-partner-id` | Partner ID (e.g. `ptr_8d0bbe200cc3`) |
-| `x-partner-key` | Partner API key |
+| `x-partner-id` | Your partner ID |
+| `x-partner-key` | Your partner API key |
 | `Content-Type` | `application/json` |
 
 **Read operations** (query, record, bulk fetch, facets) are publicly accessible for public masters.

@@ -14,7 +14,7 @@ if (!process.env.__OW_NAMESPACE && process.env.AIO_runtime_namespace) {
   process.env.__OW_NAMESPACE = process.env.AIO_runtime_namespace
 }
 
-const SYSTEM_COLLECTIONS = ['metadata', 'versions', 'audit', 'settings', 'archives', 'roles', 'partners']
+const SYSTEM_COLLECTIONS = ['metadata', 'audit', 'settings', 'archives', 'roles', 'partners']
 const MDM_COLLECTION_PREFIX = 'mdm_'
 
 async function run () {

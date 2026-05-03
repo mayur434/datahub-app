@@ -14,9 +14,9 @@
 
 const { Core } = require('@adobe/aio-sdk')
 const libDb = require('@adobe/aio-lib-db')
-const filesLib = require('@adobe/aio-lib-files')
+const { getFilesClient } = require('../mdm-utils')
 const crypto = require('crypto')
-const { getTimezoneDate } = require('../mdm-utils')
+const { getTimezoneDate, getEnvConfig } = require('../mdm-utils')
 
 // ============ DB Connection ============
 
@@ -75,10 +75,8 @@ async function main (params) {
       return createResponse({ status: 'skipped', reason: 'Global archival disabled' })
     }
 
-    // Initialize aio-lib-files
-    const { generateAccessToken } = Core.AuthClient
-    const token = await generateAccessToken(params)
-    const files = await filesLib.init({ ow: { auth: token.access_token } })
+    // Initialize aio-lib-files (handles both local dev and deployed Runtime)
+    const files = await getFilesClient()
 
     // Get all active masters
     const allEntities = await metaCol.find({ status: 'active' }).toArray()
@@ -147,11 +145,17 @@ async function main (params) {
 
         // Upload to aio-lib-files with public access
         const contentBuffer = Buffer.from(archiveContent, 'utf-8')
+        logger.info(`[archive] Uploading ${filePath} (${contentBuffer.length} bytes) to aio-lib-files...`)
         await files.write(filePath, contentBuffer)
+        logger.info(`[archive] Upload complete: ${filePath}`)
 
         // Generate pre-signed public URL (valid for retention period)
         const expiryMs = retentionDays * 24 * 60 * 60 * 1000
-        const publicUrl = await files.generatePresignURL(filePath, { expiryInSeconds: Math.min(expiryMs / 1000, 86400 * 365) })
+        // aio-lib-files max presign TTL is 86400s (24h)
+        const presignTTL = Math.min(expiryMs / 1000, 86400)
+        logger.info(`[archive] Generating presign URL (TTL: ${presignTTL}s)...`)
+        const publicUrl = await files.generatePresignURL(filePath, { expiryInSeconds: presignTTL })
+        logger.info(`[archive] Presign URL generated for ${entity.masterName}`)
 
         // Calculate expiry date
         const now = new Date()
@@ -185,8 +189,9 @@ async function main (params) {
         // Delete archived records from DB
         const primaryKeys = oldRecords.map(r => r.primaryKey)
 
-        // Delete in batches to avoid timeouts (uses performance.bulkBatchSize from settings)
-        const batchSize = (globalSettings && globalSettings.performance && globalSettings.performance.bulkBatchSize) || Number(params.BULK_BATCH_SIZE) || 1000
+        // Delete in batches to avoid timeouts
+        const env = getEnvConfig(params)
+        const batchSize = env.bulkBatchSize
         for (let i = 0; i < primaryKeys.length; i += batchSize) {
           const batch = primaryKeys.slice(i, i + batchSize)
           await masterCol.deleteMany({

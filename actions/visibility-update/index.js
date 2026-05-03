@@ -3,7 +3,7 @@
  * Toggle public/private mode for an entity.
  */
 
-const { getDbClient, safeFindOne, COLLECTIONS, createVersion, createAuditLog, createResponse, createErrorResponse, validateIMSToken, getUserFromParams, getTimezoneDate } = require('../mdm-utils')
+const { getDbClient, safeFindOne, COLLECTIONS, createAuditLog, createResponse, createErrorResponse, validateIMSToken, getUserFromParams, getTimezoneDate, enforceAppPermission } = require('../mdm-utils')
 
 async function main (params) {
   if (params.__ow_method === 'options') return createResponse({})
@@ -22,6 +22,11 @@ async function main (params) {
     }
 
     client = await getDbClient(params)
+
+    // App-level RBAC
+    const appPerm = await enforceAppPermission(client, params, 'visibility-update')
+    if (!appPerm.allowed) return appPerm.response
+
     const user = await getUserFromParams(params, client)
     const metaCol = await client.collection(COLLECTIONS.METADATA)
 
@@ -36,10 +41,6 @@ async function main (params) {
       { masterName: entity },
       { $set: { visibility, updatedAt: getTimezoneDate(params), lastModifiedBy: user } }
     )
-
-    await createVersion(client, entity, 'visibility-update', user, {
-      previousVisibility, newVisibility: visibility
-    }, metadata.recordCount)
 
     await createAuditLog(client, {
       masterName: entity,

@@ -5,7 +5,7 @@
  * Operates on per-master collections.
  */
 
-const { getDbClient, safeFindOne, COLLECTIONS, getMasterCollection, parseCSV, createVersion, createAuditLog, createResponse, createErrorResponse, validateIMSToken, getUserFromParams, checkPermission, checkStorageGuardrails, getEnvConfig, getCachedSettings, injectRecordAuditFields, getTimezoneDate } = require('../mdm-utils')
+const { getDbClient, safeFindOne, COLLECTIONS, getMasterCollection, parseCSV, createAuditLog, createResponse, createErrorResponse, validateIMSToken, getUserFromParams, checkPermission, checkStorageGuardrails, getEnvConfig, getCachedSettings, injectRecordAuditFields, getTimezoneDate, enforceAppPermission } = require('../mdm-utils')
 
 async function main (params) {
   if (params.__ow_method === 'options') return createResponse({})
@@ -20,6 +20,11 @@ async function main (params) {
     if (!master) return createErrorResponse('Missing required parameter: master')
 
     client = await getDbClient(params)
+
+    // App-level RBAC
+    const appPerm = await enforceAppPermission(client, params, 'bulk-update')
+    if (!appPerm.allowed) return appPerm.response
+
     const user = await getUserFromParams(params, client)
 
     // RBAC check
@@ -117,7 +122,7 @@ async function main (params) {
               updated++
             } else {
               if (auditConfig) injectRecordAuditFields(record, auditConfig, user, params, true)
-              ops.push({ insertOne: { document: { primaryKey: pk, versionId: metadata.activeVersionId, data: record, status: 'active', deleted: false, createdAt: getTimezoneDate(params), createdBy: user, updatedAt: getTimezoneDate(params), updatedBy: user } } })
+              ops.push({ insertOne: { document: { primaryKey: pk, data: record, status: 'active', deleted: false, createdAt: getTimezoneDate(params), createdBy: user, updatedAt: getTimezoneDate(params), updatedBy: user } } })
               inserted++
             }
             break
@@ -162,14 +167,13 @@ async function main (params) {
       }
     }
 
-    // Update count + version
+    // Update count
     const allRecs = await masterCol.find({}).toArray()
     const count = allRecs.filter(r => r.deleted !== true).length
-    const version = await createVersion(client, master, 'bulk-update', user, { inserted, updated, deleted }, count)
 
     await metaCol.updateOne(
       { masterName: master },
-      { $set: { activeVersionId: version.versionId, recordCount: count, updatedAt: getTimezoneDate(params), lastModifiedBy: user } }
+      { $set: { recordCount: count, updatedAt: getTimezoneDate(params), lastModifiedBy: user } }
     )
 
     await createAuditLog(client, {
@@ -177,7 +181,6 @@ async function main (params) {
       operation: 'bulk-update',
       actor: user,
       status: failed === 0 ? 'success' : 'partial',
-      afterVersion: version.versionId,
       affectedRecords: inserted + updated + deleted,
       
     })
@@ -186,7 +189,6 @@ async function main (params) {
       master,
       operation: 'bulk-update',
       operationType: opType,
-      versionId: version.versionId,
       inserted,
       updated,
       deleted,

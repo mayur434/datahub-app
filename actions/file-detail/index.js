@@ -3,7 +3,7 @@
  * Returns metadata and schema for a specific master.
  */
 
-const { getDbClient, safeFindOne, COLLECTIONS, createResponse, createErrorResponse, validateIMSToken } = require('../mdm-utils')
+const { getDbClient, safeFindOne, COLLECTIONS, createResponse, createErrorResponse, validateIMSToken, enforceAppPermission } = require('../mdm-utils')
 
 async function main (params) {
   if (params.__ow_method === 'options') return createResponse({})
@@ -17,6 +17,11 @@ async function main (params) {
     if (!master) return createErrorResponse('Missing required parameter: master')
 
     client = await getDbClient(params)
+
+    // App-level RBAC
+    const appPerm = await enforceAppPermission(client, params, 'file-detail')
+    if (!appPerm.allowed) return appPerm.response
+
     const metaCol = await client.collection(COLLECTIONS.METADATA)
 
     const metadata = await safeFindOne(metaCol, { masterName: master })

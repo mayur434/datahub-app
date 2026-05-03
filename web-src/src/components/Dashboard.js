@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import {
-  Heading, View, Flex, Grid, Well, Text, ProgressCircle, Button,
+  Heading, View, Flex, Well, Text, ProgressCircle, Button,
   StatusLight, Divider, ActionButton
 } from '@adobe/react-spectrum'
 import { useNavigate } from 'react-router-dom'
@@ -96,7 +96,7 @@ function Dashboard ({ runtime, ims }) {
       </Flex>
 
       {/* KPI Cards */}
-      <Grid columns={['1fr', '1fr', '1fr', '1fr']} gap='size-200' marginBottom='size-400'>
+      <div className='mdm-kpi-grid'>
         <KPICard
           title='Masters'
           value={files.length}
@@ -121,10 +121,10 @@ function Dashboard ({ runtime, ims }) {
           subtitle={latestUpdate ? latestUpdate.toLocaleTimeString() : 'No data yet'}
           color='orange'
         />
-      </Grid>
+      </div>
 
       {/* Master Health & Activity */}
-      <Grid columns={['2fr', '1fr']} gap='size-300' marginBottom='size-400'>
+      <div className='mdm-dashboard-grid'>
         {/* Entities Table */}
         <View UNSAFE_className='mdm-card'>
           <Flex justifyContent='space-between' alignItems='center' marginBottom='size-200'>
@@ -202,7 +202,7 @@ function Dashboard ({ runtime, ims }) {
             </Flex>
           </View>
         </View>
-      </Grid>
+      </div>
 
       {/* Recent Activity */}
       <View UNSAFE_className='mdm-card'>

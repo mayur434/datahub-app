@@ -3,7 +3,7 @@
  * Update master metadata (display name, description, allowed operations, etc.)
  */
 
-const { getDbClient, safeFindOne, COLLECTIONS, createAuditLog, createResponse, createErrorResponse, validateIMSToken, getUserFromParams, getTimezoneDate } = require('../mdm-utils')
+const { getDbClient, safeFindOne, COLLECTIONS, createAuditLog, createResponse, createErrorResponse, validateIMSToken, getUserFromParams, getTimezoneDate, enforceAppPermission } = require('../mdm-utils')
 
 async function main (params) {
   if (params.__ow_method === 'options') return createResponse({})
@@ -18,6 +18,11 @@ async function main (params) {
     if (!master) return createErrorResponse('Missing required parameter: master')
 
     client = await getDbClient(params)
+
+    // App-level RBAC
+    const appPerm = await enforceAppPermission(client, params, 'metadata-update')
+    if (!appPerm.allowed) return appPerm.response
+
     const user = await getUserFromParams(params, client)
     const metaCol = await client.collection(COLLECTIONS.METADATA)
 

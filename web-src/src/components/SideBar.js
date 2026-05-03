@@ -12,8 +12,12 @@ import Archive from '@spectrum-icons/workflow/Archive'
 import Help from '@spectrum-icons/workflow/Help'
 import GraphBarVertical from '@spectrum-icons/workflow/GraphBarVertical'
 import UserGroup from '@spectrum-icons/workflow/UserGroup'
+import LockClosed from '@spectrum-icons/workflow/LockClosed'
+import { useApp } from './AppContext'
 
-function SideBar () {
+function SideBar ({ onNavigate }) {
+  const { hasPermission, userLoading } = useApp()
+
   return (
     <View height='100%' UNSAFE_className='mdm-sidebar'>
       {/* Brand Header */}
@@ -34,34 +38,57 @@ function SideBar () {
         <div className='mdm-sidebar__section'>
           <span className='mdm-sidebar__section-label'>Overview</span>
           <ul className='SideNav'>
-            <SideNavItem to='/' icon={<Dashboard size='S' />} label='Dashboard' end />
+            {hasPermission('dashboard') && (
+              <SideNavItem to='/' icon={<Dashboard size='S' />} label='Dashboard' end onNavigate={onNavigate} />
+            )}
           </ul>
         </div>
 
-        <div className='mdm-sidebar__section'>
-          <span className='mdm-sidebar__section-label'>Data Management</span>
-          <ul className='SideNav'>
-            <SideNavItem to='/masters' icon={<FolderOpen size='S' />} label='Masters' />
-            <SideNavItem to='/upload' icon={<FileAdd size='S' />} label='Import Data' />
-          </ul>
-        </div>
+        {(hasPermission('masters') || hasPermission('import_data') || hasPermission('record_management') || hasPermission('schema_management') || hasPermission('archive_management')) && (
+          <div className='mdm-sidebar__section'>
+            <span className='mdm-sidebar__section-label'>Data Management</span>
+            <ul className='SideNav'>
+              {(hasPermission('masters') || hasPermission('record_management') || hasPermission('schema_management') || hasPermission('archive_management')) && (
+                <SideNavItem to='/masters' icon={<FolderOpen size='S' />} label='Masters' onNavigate={onNavigate} />
+              )}
+              {hasPermission('import_data') && (
+                <SideNavItem to='/upload' icon={<FileAdd size='S' />} label='Import Data' onNavigate={onNavigate} />
+              )}
+            </ul>
+          </div>
+        )}
 
-        <div className='mdm-sidebar__section'>
-          <span className='mdm-sidebar__section-label'>Tools</span>
-          <ul className='SideNav'>
-            <SideNavItem to='/api-console' icon={<Code size='S' />} label='Query Console' />
-          </ul>
-        </div>
+        {hasPermission('query_console') && (
+          <div className='mdm-sidebar__section'>
+            <span className='mdm-sidebar__section-label'>Tools</span>
+            <ul className='SideNav'>
+              <SideNavItem to='/api-console' icon={<Code size='S' />} label='Query Console' onNavigate={onNavigate} />
+            </ul>
+          </div>
+        )}
 
-        <div className='mdm-sidebar__section'>
-          <span className='mdm-sidebar__section-label'>Administration</span>
-          <ul className='SideNav'>
-            <SideNavItem to='/audit' icon={<Clock size='S' />} label='Activity Log' />
-            <SideNavItem to='/partners' icon={<UserGroup size='S' />} label='Partners' />
-            <SideNavItem to='/admin' icon={<GraphBarVertical size='S' />} label='Admin Console' />
-            <SideNavItem to='/settings' icon={<Settings size='S' />} label='Settings' />
-          </ul>
-        </div>
+        {(hasPermission('activity_log') || hasPermission('partners') || hasPermission('admin_console') || hasPermission('settings') || hasPermission('user_management')) && (
+          <div className='mdm-sidebar__section'>
+            <span className='mdm-sidebar__section-label'>Administration</span>
+            <ul className='SideNav'>
+              {hasPermission('activity_log') && (
+                <SideNavItem to='/audit' icon={<Clock size='S' />} label='Activity Log' onNavigate={onNavigate} />
+              )}
+              {hasPermission('partners') && (
+                <SideNavItem to='/partners' icon={<UserGroup size='S' />} label='Partners' onNavigate={onNavigate} />
+              )}
+              {hasPermission('admin_console') && (
+                <SideNavItem to='/admin' icon={<GraphBarVertical size='S' />} label='Admin Console' onNavigate={onNavigate} />
+              )}
+              {hasPermission('settings') && (
+                <SideNavItem to='/settings' icon={<Settings size='S' />} label='Settings' onNavigate={onNavigate} />
+              )}
+              {hasPermission('user_management') && (
+                <SideNavItem to='/users' icon={<LockClosed size='S' />} label='Users & Roles' onNavigate={onNavigate} />
+              )}
+            </ul>
+          </div>
+        )}
       </nav>
 
       {/* Footer */}
@@ -77,13 +104,14 @@ function SideBar () {
   )
 }
 
-function SideNavItem ({ to, icon, label, end }) {
+function SideNavItem ({ to, icon, label, end, onNavigate }) {
   return (
     <li className='SideNav-item'>
       <NavLink
         className={({ isActive }) => `SideNav-itemLink ${isActive ? 'is-selected' : ''}`}
         to={to}
         end={end}
+        onClick={onNavigate}
       >
         <span className='SideNav-itemIcon'>{icon}</span>
         <span className='SideNav-itemLabel'>{label}</span>

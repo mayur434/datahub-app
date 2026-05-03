@@ -19,7 +19,7 @@ function AppSettings ({ runtime, ims }) {
   // Local form state
   const [auditEnabled, setAuditEnabled] = useState(true)
   const [retentionDays, setRetentionDays] = useState(90)
-  const [cleanupEnabled, setCleanupEnabled] = useState(false)
+  const [archiveRetentionDays, setArchiveRetentionDays] = useState(365)
   const [enableAuditAlerts, setEnableAuditAlerts] = useState(false)
   const [alertThreshold, setAlertThreshold] = useState(10)
 
@@ -41,27 +41,22 @@ function AppSettings ({ runtime, ims }) {
       const s = result.settings
       setSettings(s)
 
-      // Populate form
+      // Populate form — all values come from server (env-enforced), no local fallbacks
       if (s.audit) {
         setAuditEnabled(s.audit.enabled !== false)
-        setRetentionDays(s.audit.retentionDays || 90)
-        setCleanupEnabled(s.audit.cleanupEnabled || false)
-      } else if (s.auditRetention) {
-        // Legacy key fallback
-        setAuditEnabled(s.auditRetention.enabled !== false)
-        setRetentionDays(s.auditRetention.retentionDays || 90)
-        setCleanupEnabled(s.auditRetention.cleanupEnabled || false)
+        setRetentionDays(s.audit.retentionDays)
+        setArchiveRetentionDays(s.audit.archiveRetentionDays)
       }
       if (s.notifications) {
         setEnableAuditAlerts(s.notifications.enableAuditAlerts || false)
-        setAlertThreshold(s.notifications.alertThreshold || 10)
+        setAlertThreshold(s.notifications.alertThreshold)
       }
       if (s.guardrails) {
-        setMaxStorageMB(s.guardrails.maxStorageMB || 10240)
-        setMaxFileSizeMB(s.guardrails.maxFileSizeMB || 10)
+        setMaxStorageMB(s.guardrails.maxStorageMB)
+        setMaxFileSizeMB(s.guardrails.maxFileSizeMB)
       }
       if (s.general) {
-        setTimezone(s.general.timezone || 'Asia/Kolkata')
+        setTimezone(s.general.timezone)
       }
       setError(null)
     } catch (e) {
@@ -76,9 +71,7 @@ function AppSettings ({ runtime, ims }) {
       setSaving(true)
       const updatedSettings = {
         audit: {
-          enabled: auditEnabled,
-          retentionDays,
-          cleanupEnabled
+          enabled: auditEnabled
         },
         guardrails: {
           maxFileSizeMB
@@ -94,22 +87,6 @@ function AppSettings ({ runtime, ims }) {
       await loadSettings()
     } catch (e) {
       notify.error(`Failed to save settings: ${e.message}`)
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  async function handleRunCleanupNow () {
-    try {
-      setSaving(true)
-      const result = await invokeAction('audit-cleanup', {}, ims, 'POST')
-      if (result.status === 'skipped') {
-        notify.info(`Cleanup skipped: ${result.reason}`)
-      } else {
-        notify.success(`Cleanup complete: ${result.deleted} log(s) removed`)
-      }
-    } catch (e) {
-      notify.error(`Cleanup failed: ${e.message}`)
     } finally {
       setSaving(false)
     }
@@ -155,54 +132,56 @@ function AppSettings ({ runtime, ims }) {
         </Button>
       </Flex>
 
-      {/* Audit Retention Section */}
+      {/* Audit Section */}
       <View UNSAFE_className='mdm-card' marginBottom='size-300'>
         <Flex alignItems='center' gap='size-150' marginBottom='size-200'>
-          <Heading level={3}>Audit Log Retention</Heading>
-          <StatusLight variant={cleanupEnabled ? 'positive' : 'neutral'}>
-            {cleanupEnabled ? 'Cleanup Active' : 'Cleanup Disabled'}
+          <Heading level={3}>Auditing</Heading>
+          <StatusLight variant={auditEnabled ? 'positive' : 'negative'}>
+            {auditEnabled ? 'Enabled' : 'Disabled'}
           </StatusLight>
         </Flex>
         <Text marginBottom='size-200'>
-          Configure how long audit logs are retained and whether automatic cleanup is enabled.
-          The cleanup job runs daily via the alarm scheduler.
+          When enabled, all data operations (uploads, updates, deletes, schema changes) are logged to the audit trail.
+          Disabling stops all audit writes across every action — saves DB space and reduces overhead.
         </Text>
         <Divider size='S' marginBottom='size-200' />
 
         <Flex direction='column' gap='size-200'>
           <Switch isSelected={auditEnabled} onChange={setAuditEnabled}>
-            Enable audit logging
+            Enable Auditing
           </Switch>
 
           <NumberField
-            label='Retention period (days)'
+            label='Log retention period (days)'
             value={retentionDays}
             onChange={setRetentionDays}
             minValue={1}
-            maxValue={365}
+            maxValue={730}
             step={1}
             width='size-2400'
-            isDisabled={!auditEnabled}
+            isReadOnly
+            description='Fixed at deployment — configured via AUDIT_RETENTION_DAYS in .env'
           />
 
-          <View>
-            <Switch isSelected={cleanupEnabled} onChange={setCleanupEnabled} isDisabled={!auditEnabled}>
-              Enable scheduled cleanup
-            </Switch>
-            <Text UNSAFE_style={{ fontSize: '12px', color: 'var(--spectrum-global-color-gray-600)' }}>
-              When enabled, a daily scheduled job will automatically delete audit logs older than the retention period.
-            </Text>
-          </View>
+          <NumberField
+            label='Archive retention period (days)'
+            value={archiveRetentionDays}
+            onChange={setArchiveRetentionDays}
+            minValue={1}
+            maxValue={3650}
+            step={1}
+            width='size-2400'
+            isReadOnly
+            description='Fixed at deployment — configured via ARCHIVE_RETENTION_DAYS in .env'
+          />
 
-          <Flex gap='size-100' marginTop='size-100'>
-            <Button
-              variant='secondary'
-              onPress={handleRunCleanupNow}
-              isDisabled={saving || !auditEnabled}
-            >
-              Run Cleanup Now
-            </Button>
-          </Flex>
+          <Well UNSAFE_style={{ fontSize: '13px' }}>
+            <Text>
+              <strong>How it works:</strong> When auditing is ON, a daily scheduler (02:00 UTC) archives logs older
+              than {retentionDays} days as compressed CSV files, then purges archive files older than {archiveRetentionDays} days.
+              Use the buttons on the Activity Log page to run either phase manually.
+            </Text>
+          </Well>
         </Flex>
       </View>
 
@@ -292,9 +271,10 @@ function AppSettings ({ runtime, ims }) {
       <Well marginTop='size-200'>
         <Flex direction='column' gap='size-100'>
           <Text>
-            <strong>Scheduler Info:</strong> The audit cleanup job is configured as a cron trigger using the
-            App Builder alarm package. It runs daily at 02:00 UTC. When "Enable scheduled cleanup" is ON,
-            the job will purge audit logs older than the configured retention period.
+            <strong>Scheduler Info:</strong> The audit cleanup job runs daily at 02:00 UTC via the
+            App Builder alarm package. When auditing is ON, the job archives expired logs as compressed
+            CSV files and purges old archives automatically. Use the Activity Log page to run either
+            phase on demand.
           </Text>
           <Text>
             <strong>Guardrails Info:</strong> MDM Max Storage is set at deployment via .env and cannot be changed from the admin console.

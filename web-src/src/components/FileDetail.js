@@ -6,6 +6,7 @@ import {
 import { useParams, useNavigate } from 'react-router-dom'
 import { fetchFileDetail, updateVisibility, updateMetadata } from './actionInvoker'
 import { useNotifications } from './NotificationProvider'
+import { useApp } from './AppContext'
 import Edit from '@spectrum-icons/workflow/Edit'
 import Copy from '@spectrum-icons/workflow/Copy'
 
@@ -13,6 +14,7 @@ function FileDetail ({ runtime, ims }) {
   const { master } = useParams()
   const navigate = useNavigate()
   const notify = useNotifications()
+  const { hasPermission } = useApp()
   const [file, setFile] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
@@ -85,15 +87,20 @@ function FileDetail ({ runtime, ims }) {
             </StatusLight>
           </Flex>
           <Text UNSAFE_className='mdm-page__subtitle'>
-            {file.masterName || file.entityName} • {file.recordCount} records • Version {file.activeVersionId}
+            {file.masterName || file.entityName} • {file.recordCount} records
           </Text>
         </View>
         <Flex gap='size-100' wrap>
           <Button variant='secondary' onPress={() => navigate('/masters')}>Back</Button>
-          <Button variant='primary' onPress={() => navigate(`/masters/${master}/records`)}>Records</Button>
-          <Button variant='primary' onPress={() => navigate(`/masters/${master}/schema`)}>Schema</Button>
-          <Button variant='primary' onPress={() => navigate(`/masters/${master}/versions`)}>Versions</Button>
-          <Button variant='primary' onPress={() => navigate(`/masters/${master}/archives`)}>Archives</Button>
+          {(hasPermission('masters') || hasPermission('record_management')) && (
+            <Button variant='primary' onPress={() => navigate(`/masters/${master}/records`)}>Records</Button>
+          )}
+          {(hasPermission('masters') || hasPermission('schema_management')) && (
+            <Button variant='primary' onPress={() => navigate(`/masters/${master}/schema`)}>Schema</Button>
+          )}
+          {(hasPermission('masters') || hasPermission('archive_management')) && (
+            <Button variant='primary' onPress={() => navigate(`/masters/${master}/archives`)}>Archives</Button>
+          )}
         </Flex>
       </Flex>
 
@@ -372,7 +379,6 @@ function FileDetail ({ runtime, ims }) {
                     <tr><td><code>delta-update</code></td><td>Incremental update (upsert/insert/update/mixed)</td></tr>
                     <tr><td><code>bulk-update</code></td><td>Bulk operations with dry-run support</td></tr>
                     <tr><td><code>schema-update</code></td><td>Add/remove/rename/update schema fields</td></tr>
-                    <tr><td><code>version-rollback</code></td><td>Rollback to previous version</td></tr>
                   </tbody>
                 </table>
               </View>
@@ -396,14 +402,10 @@ function FileDetail ({ runtime, ims }) {
             <View paddingTop='size-300'>
               <Flex direction='column' gap='size-200'>
                 <View UNSAFE_className='mdm-card'>
-                  <Heading level={3} marginBottom='size-200'>Versioning</Heading>
+                  <Heading level={3} marginBottom='size-200'>Schema</Heading>
                   <div className='mdm-detail-list'>
-                    <DetailRow label='Active Version' value={file.activeVersionId} />
                     <DetailRow label='Schema Version' value={file.schemaVersionId} />
                   </div>
-                  <Button variant='secondary' marginTop='size-200' onPress={() => navigate(`/masters/${master}/versions`)}>
-                    View Version History
-                  </Button>
                 </View>
 
                 {/* Partner Integration Info */}

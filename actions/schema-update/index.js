@@ -4,7 +4,7 @@
  * Migrates existing records in per-master collection when needed.
  */
 
-const { getDbClient, safeFindOne, COLLECTIONS, getMasterCollection, createVersion, createAuditLog, createResponse, createErrorResponse, validateIMSToken, getUserFromParams, getEnvConfig, getCachedSettings, getTimezoneDate } = require('../mdm-utils')
+const { getDbClient, safeFindOne, COLLECTIONS, getMasterCollection, createAuditLog, createResponse, createErrorResponse, validateIMSToken, getUserFromParams, getEnvConfig, getCachedSettings, getTimezoneDate, enforceAppPermission } = require('../mdm-utils')
 
 async function main (params) {
   if (params.__ow_method === 'options') return createResponse({})
@@ -19,6 +19,11 @@ async function main (params) {
     if (!master) return createErrorResponse('Missing required parameter: master')
 
     client = await getDbClient(params)
+
+    // App-level RBAC
+    const appPerm = await enforceAppPermission(client, params, 'schema-update')
+    if (!appPerm.allowed) return appPerm.response
+
     const user = await getUserFromParams(params, client)
     const metaCol = await client.collection(COLLECTIONS.METADATA)
     const masterCol = await getMasterCollection(client, master)
@@ -100,7 +105,6 @@ async function handleAddField (client, metaCol, masterCol, metadata, master, fie
     }
   }
 
-  await createVersion(client, master, 'schema-update-add', user, {}, metadata.recordCount)
   await createAuditLog(client, { masterName: master, operation: 'schema-add-field', actor: user, status: 'success' })
 
   return createResponse({ status: 'success', master, schemaVersion: metadata.schemaVersionId, field: newField, message: `Field '${field.name}' added to schema` })
@@ -130,7 +134,6 @@ async function handleUpdateField (client, metaCol, metadata, master, field, user
     { $set: { schema: metadata.schema, schemaVersionId: metadata.schemaVersionId, updatedAt: getTimezoneDate(params), lastModifiedBy: user } }
   )
 
-  await createVersion(client, master, 'schema-update-field', user, {}, metadata.recordCount)
   await createAuditLog(client, { masterName: master, operation: 'schema-update-field', actor: user, status: 'success' })
 
   return createResponse({ status: 'success', master, schemaVersion: metadata.schemaVersionId, field: metadata.schema[idx], message: `Field '${field.name}' updated` })
@@ -152,7 +155,6 @@ async function handleRemoveField (client, metaCol, metadata, master, field, user
     { $set: { schema: metadata.schema, schemaVersionId: metadata.schemaVersionId, updatedAt: getTimezoneDate(params), lastModifiedBy: user } }
   )
 
-  await createVersion(client, master, 'schema-remove-field', user, {}, metadata.recordCount)
   await createAuditLog(client, { masterName: master, operation: 'schema-remove-field', actor: user, status: 'success' })
 
   return createResponse({ status: 'success', master, schemaVersion: metadata.schemaVersionId, message: `Field '${field.name}' removed from schema` })
@@ -188,7 +190,6 @@ async function handleRenameField (client, metaCol, masterCol, metadata, master, 
     { $set: { schema: metadata.schema, schemaVersionId: metadata.schemaVersionId, updatedAt: getTimezoneDate(params), lastModifiedBy: user } }
   )
 
-  await createVersion(client, master, 'schema-rename-field', user, {}, metadata.recordCount)
   await createAuditLog(client, { masterName: master, operation: 'schema-rename-field', actor: user, status: 'success' })
 
   return createResponse({ status: 'success', master, schemaVersion: metadata.schemaVersionId, message: `Field '${field.name}' renamed to '${field.newName}'` })
@@ -197,9 +198,9 @@ async function handleRenameField (client, metaCol, masterCol, metadata, master, 
 async function handleReplaceSchema (client, metaCol, metadata, master, fields, user, params) {
   if (!fields || !Array.isArray(fields)) return createErrorResponse('Fields array is required')
 
-  // Enforce maxSchemaFields from settings
-  const settingsDoc = await getCachedSettings(client)
-  const maxSchemaFields = settingsDoc?.dataManagement?.maxSchemaFields || 100
+  // Enforce maxSchemaFields from env
+  const env = getEnvConfig(params)
+  const maxSchemaFields = env.maxSchemaFields
   if (fields.length > maxSchemaFields) {
     return createErrorResponse(`Schema replacement has ${fields.length} fields — max ${maxSchemaFields} allowed.`, 422)
   }
@@ -211,8 +212,6 @@ async function handleReplaceSchema (client, metaCol, metadata, master, fields, u
     { masterName: master },
     { $set: { schema: fields, schemaVersionId, updatedAt: getTimezoneDate(params), lastModifiedBy: user } }
   )
-
-  await createVersion(client, master, 'schema-replace', user, {}, metadata.recordCount)
 
   return createResponse({ status: 'success', master, schemaVersion: schemaVersionId, message: 'Schema replaced' })
 }
@@ -262,7 +261,6 @@ async function handleUpdateFacets (client, metaCol, metadata, master, params, us
     { $set: { schema: metadata.schema, facets, schemaVersionId, updatedAt: getTimezoneDate(params), lastModifiedBy: user } }
   )
 
-  await createVersion(client, master, 'facets-update', user, {}, metadata.recordCount)
   await createAuditLog(client, { masterName: master, operation: 'facets-update', actor: user, status: 'success' })
 
   return createResponse({

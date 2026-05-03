@@ -302,7 +302,6 @@ function FileList ({ runtime, ims }) {
                           case 'view': navigate(`/masters/${file.masterName || file.entityName}`); break
                           case 'records': navigate(`/masters/${file.masterName || file.entityName}/records`); break
                           case 'schema': navigate(`/masters/${file.masterName || file.entityName}/schema`); break
-                          case 'versions': navigate(`/masters/${file.masterName || file.entityName}/versions`); break
                           case 'archives': navigate(`/masters/${file.masterName || file.entityName}/archives`); break
                           case 'visibility': handleToggleVisibility(file.masterName || file.entityName, file.visibility); break
                           case 'delete': handleDelete(file.masterName || file.entityName, file.displayName); break
@@ -312,7 +311,6 @@ function FileList ({ runtime, ims }) {
                       <Item key='view'>View Details</Item>
                       <Item key='records'>Manage Records</Item>
                       <Item key='schema'>Edit Schema</Item>
-                      <Item key='versions'>Version History</Item>
                       <Item key='archives'>Archives &amp; Backups</Item>
                       <Item key='visibility'>{file.visibility === 'public' ? 'Make Private' : 'Make Public'}</Item>
                       <Item key='delete'>Delete Master</Item>

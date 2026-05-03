@@ -13,15 +13,15 @@
     },
     {
       "key": "partner_id",
-      "value": "ptr_8d0bbe200cc3",
+      "value": "YOUR_PARTNER_ID",
       "type": "string",
-      "description": "Partner ID for authentication"
+      "description": "Partner ID for authentication (get from Admin Console → Partner Management)"
     },
     {
       "key": "partner_key",
-      "value": "pk_E3kzh6wR1CwcXioPV2ZDsfi4Nigq356BrLWPRZerqNY",
+      "value": "YOUR_PARTNER_KEY",
       "type": "string",
-      "description": "Partner API key for authentication"
+      "description": "Partner API key for authentication (get from Admin Console → Partner Management)"
     },
     {
       "key": "master",

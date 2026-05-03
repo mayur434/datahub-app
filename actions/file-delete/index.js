@@ -3,7 +3,7 @@
  * Soft deletes a master and drops its per-master collection.
  */
 
-const { getDbClient, safeFindOne, COLLECTIONS, getMasterCollection, createVersion, createAuditLog, createResponse, createErrorResponse, validateIMSToken, getUserFromParams, getTimezoneDate } = require('../mdm-utils')
+const { getDbClient, safeFindOne, COLLECTIONS, getMasterCollection, createAuditLog, createResponse, createErrorResponse, validateIMSToken, getUserFromParams, getTimezoneDate, enforceAppPermission } = require('../mdm-utils')
 
 async function main (params) {
   if (params.__ow_method === 'options') return createResponse({})
@@ -17,6 +17,11 @@ async function main (params) {
     if (!master) return createErrorResponse('Missing required parameter: master')
 
     client = await getDbClient(params)
+
+    // App-level RBAC
+    const appPerm = await enforceAppPermission(client, params, 'file-delete')
+    if (!appPerm.allowed) return appPerm.response
+
     const user = await getUserFromParams(params, client)
     const metaCol = await client.collection(COLLECTIONS.METADATA)
 
@@ -33,11 +38,6 @@ async function main (params) {
         message: `Master '${master}' is already deleted`
       })
     }
-
-    // Create tombstone version
-    await createVersion(client, master, 'delete', user, {
-      inserted: 0, updated: 0, deleted: metadata.recordCount
-    }, 0)
 
     // Soft delete metadata
     await metaCol.updateOne(

@@ -146,17 +146,6 @@ export async function updateSchema (master, operation, field, ims) {
 }
 
 /**
- * Version operations
- */
-export async function fetchVersions (master, ims) {
-  return invokeAction('version-list', { master: master }, ims, 'GET')
-}
-
-export async function rollbackVersion (master, versionId, ims) {
-  return invokeAction('version-rollback', { master: master, versionId }, ims, 'POST')
-}
-
-/**
  * Visibility operations
  */
 export async function updateVisibility (master, visibility, ims) {
@@ -175,6 +164,18 @@ export async function fetchFacets (master, params, ims) {
  */
 export async function fetchAuditLogs (params, ims) {
   return invokeAction('audit-list', params, ims, 'GET')
+}
+
+export async function fetchAuditArchives (params, ims) {
+  return invokeAction('audit-list', { ...params, type: 'archives' }, ims, 'GET')
+}
+
+export async function triggerAuditCleanup (ims) {
+  return invokeAction('audit-cleanup', { phase: 'archive' }, ims, 'POST')
+}
+
+export async function triggerArchivePurge (ims) {
+  return invokeAction('audit-cleanup', { phase: 'purge' }, ims, 'POST')
 }
 
 /**
@@ -201,4 +202,78 @@ export async function triggerArchiveRun (master, ims) {
  */
 export async function fetchInfraMetrics (report, params, ims) {
   return invokeAction('infra-metrics', { report, ...params }, ims, 'GET')
+}
+
+// ============ User & Role Management ============
+
+/**
+ * Resolve the current logged-in user's role and permissions.
+ * Called on every app mount to gate features.
+ */
+export async function resolveCurrentUser (ims) {
+  return invokeAction('user-management', { op: 'resolve' }, ims, 'GET')
+}
+
+/**
+ * List all app users (user_management permission required).
+ */
+export async function fetchAppUsers (ims) {
+  return invokeAction('user-management', { op: 'users' }, ims, 'GET')
+}
+
+/**
+ * List all app roles (user_management permission required).
+ */
+export async function fetchAppRoles (ims) {
+  return invokeAction('user-management', { op: 'roles' }, ims, 'GET')
+}
+
+/**
+ * Create a single app user.
+ */
+export async function createAppUser (userData, ims) {
+  return invokeAction('user-management', { op: 'create-user', ...userData }, ims, 'POST')
+}
+
+/**
+ * Bulk create app users.
+ * @param {Array} users - Array of { email, firstName, lastName, roleId }
+ */
+export async function bulkCreateAppUsers (users, ims) {
+  return invokeAction('user-management', { op: 'bulk-create-users', users }, ims, 'POST')
+}
+
+/**
+ * Update an app user (role, status, name).
+ */
+export async function updateAppUser (userData, ims) {
+  return invokeAction('user-management', { op: 'update-user', ...userData }, ims, 'POST')
+}
+
+/**
+ * Deactivate an app user.
+ */
+export async function deleteAppUser (email, ims) {
+  return invokeAction('user-management', { op: 'delete-user', email }, ims, 'POST')
+}
+
+/**
+ * Create a custom role.
+ */
+export async function createAppRole (roleData, ims) {
+  return invokeAction('user-management', { op: 'create-role', ...roleData }, ims, 'POST')
+}
+
+/**
+ * Update a custom role.
+ */
+export async function updateAppRole (roleData, ims) {
+  return invokeAction('user-management', { op: 'update-role', ...roleData }, ims, 'POST')
+}
+
+/**
+ * Delete a custom role (must have 0 assigned users).
+ */
+export async function deleteAppRole (roleId, ims) {
+  return invokeAction('user-management', { op: 'delete-role', roleId }, ims, 'POST')
 }

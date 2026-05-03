@@ -1,31 +1,32 @@
 /**
  * MDM Dashboard Stats Action
  * Returns summary statistics for the admin dashboard.
- * Uses a cache layer (dashboard-cache in settings collection) for fast loads.
- * Cache is invalidated automatically on data mutations and refreshed every 30 min.
+ * Uses aio-lib-state cache with TTL-based expiry for fast loads.
+ * On cache miss: computes fresh data, caches it, and serves.
+ * Cache auto-refreshes every METRICS_CACHE_TTL_MINUTES (default 15 min).
  */
 
-const { getDbClient, safeFindOne, COLLECTIONS, createResponse, createErrorResponse, validateIMSToken, getEnvConfig, getStateClient, getTimezoneDate } = require('../mdm-utils')
+const { getDbClient, safeFindOne, COLLECTIONS, createResponse, createErrorResponse, validateIMSToken, getEnvConfig, getStateClient, getTimezoneDate, enforceAppPermission } = require('../mdm-utils')
 
 const DASHBOARD_CACHE_KEY = 'dashboard-cache'
 
 async function main (params) {
   if (params.__ow_method === 'options') return createResponse({})
 
-  // Allow scheduled trigger invocations (no auth) for cache refresh jobs
-  const isScheduledRefresh = params.__ow_method === undefined && !params.__ow_headers
-  if (!isScheduledRefresh) {
-    const auth = validateIMSToken(params)
-    if (!auth.valid) return createErrorResponse(auth.error, 401)
-  }
+  const auth = validateIMSToken(params)
+  if (!auth.valid) return createErrorResponse(auth.error, 401)
 
   const env = getEnvConfig(params)
   const CACHE_TTL_SECONDS = env.metricsCacheTTLMinutes * 60
-  const forceRefresh = isScheduledRefresh || params.forceRefresh === true || params.forceRefresh === 'true'
+  const forceRefresh = params.forceRefresh === true || params.forceRefresh === 'true'
 
   let client
   try {
     client = await getDbClient(params)
+
+    // App-level RBAC
+    const appPerm = await enforceAppPermission(client, params, 'dashboard')
+    if (!appPerm.allowed) return appPerm.response
 
     // Serve from aio-lib-state cache unless forced refresh
     if (!forceRefresh) {
@@ -53,7 +54,6 @@ async function main (params) {
 async function computeDashboard (client) {
   const metaCol = await client.collection(COLLECTIONS.METADATA)
   const auditCol = await client.collection(COLLECTIONS.AUDIT)
-  const versionCol = await client.collection(COLLECTIONS.VERSIONS)
 
   const allFiles = await metaCol.find({ status: { $ne: 'deleted' } }).toArray()
   const files = allFiles.filter(f => f.status !== 'deleted')
@@ -83,14 +83,12 @@ async function computeDashboard (client) {
     .toArray()
 
   const auditAlerts = await auditCol.countDocuments({ status: 'failure' })
-  const totalVersions = await versionCol.estimatedDocumentCount()
 
   return {
     totalFiles: files.length,
     publicApis,
     privateApis,
     totalRecords,
-    totalVersions,
     auditAlerts,
     recentUploads: recentUploads.slice(0, 5),
     recentLogs

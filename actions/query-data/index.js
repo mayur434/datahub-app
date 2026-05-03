@@ -6,7 +6,7 @@
  * For public data consumption, the `mdm-data` action is used via API Mesh.
  */
 
-const { getDbClient, safeFindOne, COLLECTIONS, getMasterCollection, createResponse, createErrorResponse, validateIMSToken, escapeRegex, getEnvConfig, getCachedSettings } = require('../mdm-utils')
+const { getDbClient, safeFindOne, COLLECTIONS, getMasterCollection, createResponse, createErrorResponse, validateIMSToken, escapeRegex, getEnvConfig, getCachedSettings, enforceAppPermission } = require('../mdm-utils')
 
 async function main (params) {
   if (params.__ow_method === 'options') return createResponse({})
@@ -21,6 +21,11 @@ async function main (params) {
     if (!master) return createErrorResponse('Missing required parameter: master')
 
     client = await getDbClient(params)
+
+    // App-level RBAC
+    const appPerm = await enforceAppPermission(client, params, 'query-data')
+    if (!appPerm.allowed) return appPerm.response
+
     const metaCol = await client.collection(COLLECTIONS.METADATA)
     const masterCol = await getMasterCollection(client, master)
 

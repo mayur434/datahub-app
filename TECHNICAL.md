@@ -1,12 +1,14 @@
-# DataHub — Technical Architecture Guide
+# DataHub — Technical Developer Guide
 
-> Comprehensive technical reference for developers working on the DataHub Enterprise Data Platform.
+> Developer reference for building, testing, and deploying the DataHub platform.
+>
+> For system architecture diagrams and feature flow charts, see [ARCHITECTURE.md](ARCHITECTURE.md).
+> For GraphQL API details, see [API-REFERENCE.md](API-REFERENCE.md).
 
 ---
 
 ## Table of Contents
 
-- [Architecture Overview](#architecture-overview)
 - [Technology Stack](#technology-stack)
 - [Project Structure](#project-structure)
 - [Runtime Actions (Backend)](#runtime-actions-backend)
@@ -23,44 +25,6 @@
 - [Deployment](#deployment)
 - [Performance Considerations](#performance-considerations)
 - [Troubleshooting](#troubleshooting)
-
----
-
-## Architecture Overview
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    Adobe Experience Cloud Shell                   │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                   │
-│  ┌──────────────┐    ┌──────────────────────────────────────┐   │
-│  │   React UI   │───▶│     Adobe I/O Runtime Actions         │   │
-│  │  (Spectrum)  │    │         (Node.js 22)                  │   │
-│  └──────────────┘    └─────────┬──────────────┬─────────────┘   │
-│                                │              │                   │
-│                    ┌───────────▼──┐    ┌──────▼──────┐          │
-│                    │ @adobe/aio-  │    │ @adobe/aio- │          │
-│                    │  lib-db      │    │  lib-files  │          │
-│                    │ (MongoDB)    │    │ (Blob Store)│          │
-│                    └──────────────┘    └─────────────┘          │
-│                                                                   │
-├─────────────────────────────────────────────────────────────────┤
-│                       Adobe API Mesh                              │
-│              (GraphQL Gateway - Public API)                       │
-│                                                                   │
-│  ┌────────────────┐         ┌────────────────────┐              │
-│  │  MDMData Source│         │  MDMFacets Source   │              │
-│  │  (JsonSchema)  │         │   (JsonSchema)      │              │
-│  └────────────────┘         └────────────────────┘              │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-### Key Design Decisions
-
-1. **Entity-Agnostic**: No code changes needed for new data types — upload CSV → auto-schema → queryable
-2. **No L2 Cache**: Direct database reads for freshness; API Mesh provides edge caching (60s/120s)
-3. **Versioned Mutations**: Every write creates an immutable version snapshot
-4. **Separation of Concerns**: Admin UI actions (auth-required) vs. Public API actions (no auth, Mesh-protected)
 
 ---
 
@@ -97,7 +61,7 @@ pimapp/
 │
 ├── actions/                 # Backend serverless actions
 │   ├── utils.js             # Shared utilities (auth, params, logging)
-│   ├── mdm-utils.js         # MDM shared helpers (DB client, safeFindOne, CSV parsing, auth, versioning, audit)
+│   ├── mdm-utils.js         # MDM shared helpers (DB client, safeFindOne, CSV parsing, auth, audit)
 │   │
 │   ├── dashboard/           # Dashboard KPIs & platform status
 │   ├── file-upload/         # CSV import & entity creation
@@ -112,8 +76,6 @@ pimapp/
 │   ├── bulk-update/         # Batch append operations
 │   │
 │   ├── schema-update/       # Schema modification (types, visibility, facets)
-│   ├── version-list/        # Version history retrieval
-│   ├── version-rollback/    # Restore entity to previous version
 │   ├── visibility-update/   # Field visibility toggles
 │   │
 │   ├── query-data/          # Admin query interface (auth-required)
@@ -163,7 +125,6 @@ pimapp/
 │           ├── FileDetail.js    # Entity detail with tabs
 │           ├── RecordManager.js # Record CRUD interface
 │           ├── SchemaManager.js # Schema editor
-│           ├── VersionManager.js# Version history & rollback
 │           ├── ArchiveManager.js# Archive config & history
 │           ├── QueryConsole.js  # Ad-hoc query builder
 │           ├── AuditLogs.js     # Activity log viewer
@@ -232,15 +193,13 @@ exports.main = main
 | `file-upload` | POST | Yes | CSV import, schema detection, record insertion |
 | `file-list` | GET | Yes | List entities with search/sort/pagination |
 | `file-detail` | GET | Yes | Entity metadata + paginated records |
-| `file-delete` | DELETE | Yes | Cascade delete entity + records + versions |
+| `file-delete` | DELETE | Yes | Cascade delete entity + records |
 | `metadata-update` | POST | Yes | Update entity metadata fields |
 | `record-crud` | POST/PUT/DELETE | Yes | Individual record operations |
 | `full-update` | POST | Yes | Replace all records for an entity |
 | `delta-update` | POST | Yes | Upsert records by ID match |
 | `bulk-update` | POST | Yes | Append records without dedup |
 | `schema-update` | POST | Yes | Modify field schema & facet config |
-| `version-list` | GET | Yes | Retrieve version history |
-| `version-rollback` | POST | Yes | Restore entity to a version |
 | `visibility-update` | POST | Yes | Toggle field visibility |
 | `query-data` | GET | Yes | Admin query with filters |
 | `mdm-data` | GET | **No** | Public API (Mesh source) |
@@ -282,9 +241,8 @@ database:
 
 | Collection | Purpose | Key Fields |
 |------------|---------|------------|
-| `metadata` | Entity registry | `entityName`, `displayName`, `primaryKey`, `status`, `visibility`, `schema`, `recordCount`, `activeVersionId`, `crudEnabled`, `allowedOperations`, `facets`, `archival` |
-| `records` | Data records | `entityName`, `primaryKey`, `versionId`, `data` (dynamic), `status`, `deleted`, `createdBy`, `updatedBy` |
-| `versions` | Version snapshots | `versionId`, `entityName`, `operation`, `createdBy`, `recordCount`, `changeSummary`, `status` |
+| `metadata` | Entity registry | `entityName`, `displayName`, `primaryKey`, `status`, `visibility`, `schema`, `recordCount`, `crudEnabled`, `allowedOperations`, `facets`, `archival` |
+| `records` | Data records | `entityName`, `primaryKey`, `data` (dynamic), `status`, `deleted`, `createdBy`, `updatedBy` |
 | `audit` | Activity log | `entityName`, `operation`, `actor`, `status`, `affectedRecords`, `timestamp` |
 | `settings` | App configuration | `key`, `value`, `updatedAt` |
 | `archives` | Archive metadata | `entityName`, `archiveId`, `recordCount`, `filePath`, `createdAt` |
@@ -532,7 +490,6 @@ aio api-mesh:update mesh/mesh.json
 /files/:entity           → Entity Detail (FileDetail)
 /files/:entity/records   → Record Manager (RecordManager)
 /files/:entity/schema    → Schema Editor (SchemaManager)
-/files/:entity/versions  → Version History (VersionManager)
 /files/:entity/archives  → Archive Manager (ArchiveManager)
 /api-console             → Query Console (QueryConsole)
 /audit                   → Activity Log (AuditLogs)
@@ -668,8 +625,7 @@ User → FileUpload UI → file-upload action
   1. Parse CSV headers → auto-detect schema
   2. Insert metadata doc (entity name, schema, record count)
   3. Batch insert records into 'records' collection
-  4. Create version 1 snapshot in 'versions' collection
-  5. Create audit entry
+  4. Create audit entry
   6. Return success with entity details
 ```
 

@@ -4,7 +4,7 @@
  * Supports filtering by status, date range, and pagination.
  */
 
-const { getDbClient, safeFindOne, COLLECTIONS, createResponse, createErrorResponse, validateIMSToken, getUserFromParams, getEnvConfig, getCachedSettings } = require('../mdm-utils')
+const { getDbClient, safeFindOne, COLLECTIONS, createResponse, createErrorResponse, validateIMSToken, getUserFromParams, getEnvConfig, getCachedSettings, enforceAppPermission } = require('../mdm-utils')
 
 async function main (params) {
   if (params.__ow_method === 'options') return createResponse({})
@@ -18,6 +18,11 @@ async function main (params) {
     const { status, page, pageSize, startDate, endDate } = params
 
     client = await getDbClient(params)
+
+    // App-level RBAC
+    const appPerm = await enforceAppPermission(client, params, 'archive-list')
+    if (!appPerm.allowed) return appPerm.response
+
     const archivesCol = await client.collection(COLLECTIONS.ARCHIVES)
     const metaCol = await client.collection(COLLECTIONS.METADATA)
 

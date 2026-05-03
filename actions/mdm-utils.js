@@ -4,7 +4,7 @@
  *
  * Storage Architecture:
  *   - Primary DB: @adobe/aio-lib-db (MongoDB-like document database)
- *     Collections: metadata, records, versions, audit
+ *     Collections: metadata, records, audit
  *   - Caching: aio-lib-state (key-value store with native TTL expiry)
  */
 
@@ -49,13 +49,15 @@ async function safeFindOne (collection, filter) {
 // ============ Collection Names ============
 const COLLECTIONS = {
   METADATA: 'metadata',
-  VERSIONS: 'versions',
   AUDIT: 'audit',
+  AUDIT_ARCHIVES: 'audit_archives',
   SETTINGS: 'settings',
   ARCHIVES: 'archives',
   ROLES: 'roles',
   PARTNERS: 'partners',
-  USER_SESSIONS: 'user_sessions'
+  USER_SESSIONS: 'user_sessions',
+  APP_USERS: 'app_users',
+  APP_ROLES: 'app_roles'
 }
 
 /**
@@ -83,13 +85,431 @@ async function getMasterCollection (client, masterName) {
 // ============ RBAC Helpers ============
 
 /**
- * Role definitions with permissions
+ * Legacy role definitions for data-level permissions (partner CRUD).
  */
 const ROLE_PERMISSIONS = {
   admin: ['*'],
   editor: ['read', 'create', 'update', 'patch', 'delete', 'bulk-update', 'delta-update', 'full-update', 'upload', 'export'],
   viewer: ['read', 'export'],
   'api-consumer': ['read']
+}
+
+// ============ App-Level RBAC (Dynamic Roles & Permissions) ============
+
+/**
+ * All granular feature permission keys used across the app.
+ * Each maps to a UI feature and one or more backend actions.
+ */
+const APP_FEATURES = {
+  DASHBOARD: 'dashboard',
+  MASTERS: 'masters',
+  IMPORT_DATA: 'import_data',
+  QUERY_CONSOLE: 'query_console',
+  ACTIVITY_LOG: 'activity_log',
+  PARTNERS: 'partners',
+  ADMIN_CONSOLE: 'admin_console',
+  SETTINGS: 'settings',
+  RECORD_MANAGEMENT: 'record_management',
+  SCHEMA_MANAGEMENT: 'schema_management',
+  ARCHIVE_MANAGEMENT: 'archive_management',
+  USER_MANAGEMENT: 'user_management'
+}
+
+/**
+ * Permissions that imply read-access to masters list and detail.
+ * Any user with at least one of these can browse masters and view records.
+ */
+const DATA_PERMISSIONS = [
+  APP_FEATURES.MASTERS,
+  APP_FEATURES.IMPORT_DATA,
+  APP_FEATURES.RECORD_MANAGEMENT,
+  APP_FEATURES.SCHEMA_MANAGEMENT,
+  APP_FEATURES.ARCHIVE_MANAGEMENT
+]
+
+/**
+ * Map backend action names → array of permitted feature keys (OR logic).
+ * User needs ANY ONE of the listed permissions to access the action.
+ * `null` means unrestricted (any authenticated user).
+ * Actions not in this map are also unrestricted.
+ */
+const ACTION_FEATURE_MAP = {
+  // Dashboard — standalone
+  dashboard: ['dashboard'],
+
+  // Masters — read operations shared by many workflows
+  'file-list': DATA_PERMISSIONS,
+  'file-detail': DATA_PERMISSIONS,
+
+  // Masters — write operations require explicit 'masters' permission
+  'file-delete': ['masters'],
+  'metadata-update': ['masters'],
+
+  // Data import
+  'file-upload': ['import_data'],
+  'full-update': ['import_data', 'record_management'],
+  'delta-update': ['import_data', 'record_management'],
+  'bulk-update': ['import_data', 'record_management'],
+
+  // Data read (query) — accessible from masters, query console, or record management
+  'query-data': ['masters', 'query_console', 'record_management'],
+
+  // Record CRUD — specific permission
+  'record-crud': ['record_management'],
+
+  // Activity log
+  'audit-list': ['activity_log'],
+  'audit-cleanup': ['activity_log'],
+
+  // Partners
+  'partner-management': ['partners'],
+
+  // Admin console
+  'infra-metrics': ['admin_console'],
+
+  // Settings — read is open to all (many pages need config); write checked inside action
+  'app-settings': null,
+
+  // Schema
+  'schema-update': ['schema_management'],
+  'visibility-update': ['schema_management'],
+
+  // Archives — viewing list allowed with masters; config/run require archive_management
+  'archive-list': ['archive_management', 'masters'],
+  'archive-config': ['archive_management'],
+  'archive-run': ['archive_management'],
+
+  // User management
+  'user-management': ['user_management']
+}
+
+/**
+ * Build a default permissions object with all features set to a given value.
+ */
+function buildDefaultPermissions (value) {
+  const perms = {}
+  for (const key of Object.values(APP_FEATURES)) {
+    perms[key] = value
+  }
+  return perms
+}
+
+/**
+ * System-seeded role definitions. Created on first resolve call.
+ */
+const SYSTEM_ROLES = [
+  {
+    roleId: 'role_super_admin',
+    name: 'Super Admin',
+    description: 'Full access to all features. Cannot be modified or deleted.',
+    permissions: buildDefaultPermissions(true),
+    isSystem: true
+  },
+  {
+    roleId: 'role_viewer',
+    name: 'Viewer',
+    description: 'Read-only access to dashboards, masters, and query console.',
+    permissions: {
+      ...buildDefaultPermissions(false),
+      [APP_FEATURES.DASHBOARD]: true,
+      [APP_FEATURES.MASTERS]: true,
+      [APP_FEATURES.QUERY_CONSOLE]: true
+    },
+    isSystem: true
+  }
+]
+
+/**
+ * Seed system roles into app_roles collection if they don't exist.
+ * Uses aio-lib-state flag to avoid re-running on every request.
+ * Also cleans up any duplicate roles caused by earlier race conditions.
+ */
+async function seedSystemRoles (client, params) {
+  // Fast path: skip if already seeded recently (1-hour TTL)
+  try {
+    const state = await getStateClient()
+    const seeded = await state.get('system-roles-seeded')
+    if (seeded && seeded.value === 'true') return
+  } catch (e) { /* fall through and check DB */ }
+
+  const rolesCol = await client.collection(COLLECTIONS.APP_ROLES)
+
+  // Fetch ALL existing roles in one call to avoid per-role race conditions
+  let existingRoles = []
+  try {
+    existingRoles = await rolesCol.find({}).toArray()
+  } catch (e) { /* collection may not exist yet */ }
+
+  // Clean up duplicates: keep the first occurrence of each roleId, delete the rest
+  const seen = new Set()
+  for (const role of existingRoles) {
+    if (seen.has(role.roleId)) {
+      try { await rolesCol.deleteOne({ _id: role._id }) } catch (e) { /* best-effort */ }
+    } else {
+      seen.add(role.roleId)
+    }
+  }
+
+  // Insert any missing system roles
+  for (const role of SYSTEM_ROLES) {
+    if (!seen.has(role.roleId)) {
+      const now = getTimezoneDate(params)
+      await rolesCol.insertOne({ ...role, createdAt: now, updatedAt: now, createdBy: 'system' })
+    }
+  }
+
+  // Set flag so subsequent calls skip DB check for 1 hour
+  try {
+    const state = await getStateClient()
+    await state.put('system-roles-seeded', 'true', { ttl: 3600 })
+  } catch (e) { /* best-effort */ }
+}
+
+/**
+ * Resolve the current user's app-level role and permissions.
+ * Called on every app load and before each action via enforceAppPermission.
+ *
+ * Uses aio-lib-state cache (2-minute TTL) to avoid 5+ DB calls on every request.
+ * Cache is keyed by IMS user_id. Invalidated on user/role mutations.
+ *
+ * Flow:
+ * 1. Check state cache for resolved user (fast path)
+ * 2. Extract email from IMS token (via user_sessions cache)
+ * 3. Look up app_users by email
+ * 4. If app_users is empty AND email matches INITIAL_ADMIN_EMAIL → bootstrap first admin
+ * 5. If user not found → return { authorized: false }
+ * 6. If user found → fetch their role from app_roles → return permissions
+ *
+ * @returns {{ authorized, email, user, role, permissions }}
+ */
+const RESOLVE_CACHE_TTL = 120 // 2 minutes
+
+async function resolveAppUser (client, params) {
+  const userId = extractUserId(params)
+
+  // 1. Fast path: check state cache
+  if (userId && userId !== 'system' && userId !== 'admin@aem') {
+    try {
+      const state = await getStateClient()
+      const cached = await state.get(`resolve_${userId}`)
+      if (cached && cached.value) {
+        return JSON.parse(cached.value)
+      }
+    } catch (e) { /* cache miss — fall through */ }
+  }
+
+  // 2. Get user email
+  const email = await getUserEmailFromToken(params, client)
+  if (!email) {
+    return { authorized: false, reason: 'Could not resolve user email from token' }
+  }
+
+  const usersCol = await client.collection(COLLECTIONS.APP_USERS)
+  const rolesCol = await client.collection(COLLECTIONS.APP_ROLES)
+
+  // 3. Seed system roles if needed
+  await seedSystemRoles(client, params)
+
+  // 4. Check if app_users collection has any active users
+  let totalUsers = 0
+  try {
+    const allUsers = await usersCol.find({}).toArray()
+    totalUsers = allUsers.filter(u => u.status === 'active').length
+  } catch (e) { /* collection may not exist */ }
+
+  // 5. Bootstrap: if no users exist and email matches INITIAL_ADMIN_EMAIL
+  if (totalUsers === 0) {
+    const initialAdminEmail = (params.INITIAL_ADMIN_EMAIL || '').trim().toLowerCase()
+    if (!initialAdminEmail) {
+      return { authorized: false, reason: 'No users configured. Set INITIAL_ADMIN_EMAIL in .env and redeploy.' }
+    }
+    if (email.toLowerCase() === initialAdminEmail) {
+      // Auto-create first admin
+      const now = getTimezoneDate(params)
+      await usersCol.insertOne({
+        email: initialAdminEmail,
+        firstName: 'Admin',
+        lastName: '',
+        roleId: 'role_super_admin',
+        status: 'active',
+        createdAt: now,
+        updatedAt: now,
+        createdBy: 'system-bootstrap'
+      })
+      await createAuditLog(client, {
+        action: 'user-bootstrap',
+        masterName: '_app_users',
+        user: 'system',
+        detail: `Initial admin bootstrapped: ${initialAdminEmail}`
+      })
+      // Return full permissions
+      const result = {
+        authorized: true,
+        email: initialAdminEmail,
+        user: { email: initialAdminEmail, firstName: 'Admin', lastName: '', roleId: 'role_super_admin', status: 'active' },
+        role: SYSTEM_ROLES[0],
+        permissions: SYSTEM_ROLES[0].permissions
+      }
+      await cacheResolveResult(userId, result)
+      return result
+    } else {
+      return { authorized: false, reason: 'No users configured and your email does not match the initial admin.' }
+    }
+  }
+
+  // 6. Normal lookup
+  const appUser = await safeFindOne(usersCol, { email: email.toLowerCase() })
+  if (!appUser) {
+    return { authorized: false, reason: 'You are not registered in this application. Contact an administrator.' }
+  }
+  if (appUser.status !== 'active') {
+    return { authorized: false, reason: 'Your account has been deactivated. Contact an administrator.' }
+  }
+
+  // 7. Fetch role
+  const appRole = await safeFindOne(rolesCol, { roleId: appUser.roleId })
+  if (!appRole) {
+    return { authorized: false, reason: `Role '${appUser.roleId}' not found. Contact an administrator.` }
+  }
+
+  const result = {
+    authorized: true,
+    email: appUser.email,
+    user: appUser,
+    role: appRole,
+    permissions: appRole.permissions || {}
+  }
+
+  // Cache for subsequent calls
+  await cacheResolveResult(userId, result)
+  return result
+}
+
+/**
+ * Cache a resolved user result in aio-lib-state.
+ * Best-effort — never throws.
+ */
+async function cacheResolveResult (userId, result) {
+  if (!userId || userId === 'system' || userId === 'admin@aem') return
+  try {
+    const state = await getStateClient()
+    await state.put(`resolve_${userId}`, JSON.stringify(result), { ttl: RESOLVE_CACHE_TTL })
+  } catch (e) { /* best-effort */ }
+}
+
+/**
+ * Invalidate the resolve cache for all users.
+ * Called after user/role mutations so permission changes take effect immediately.
+ * Since we can't enumerate state keys, we use a generation counter:
+ * the cache key includes a generation number, and bumping it invalidates all old entries.
+ *
+ * Simpler approach: invalidate by specific userId if known, or use short TTL.
+ * For now, we rely on the 2-minute TTL — mutations invalidate specific users below.
+ */
+async function invalidateResolveCache (userId) {
+  if (!userId) return
+  try {
+    const state = await getStateClient()
+    await state.delete(`resolve_${userId}`)
+  } catch (e) { /* best-effort */ }
+}
+
+/**
+ * Extract user email from IMS token.
+ * Resolution order:
+ *   1. user_sessions cache (fast — populated by registerUserSession on login)
+ *   2. JWT `email` claim (some token types include it)
+ *   3. IMS Profile API fallback (slow but reliable — caches result for future calls)
+ */
+async function getUserEmailFromToken (params, client) {
+  const userId = extractUserId(params)
+  if (userId === 'system' || userId === 'admin@aem') return null
+
+  // 1. Try session cache (fast path)
+  try {
+    const sessionCol = await client.collection(COLLECTIONS.USER_SESSIONS)
+    const session = await safeFindOne(sessionCol, { userId })
+    if (session && session.email) return session.email.toLowerCase()
+  } catch (e) { /* fall through */ }
+
+  const authHeader = (params.__ow_headers || {}).authorization || ''
+
+  // 2. Try JWT email claim
+  if (authHeader) {
+    const decoded = decodeJwtPayload(authHeader)
+    if (decoded && decoded.email) return decoded.email.toLowerCase()
+  }
+
+  // 3. Fallback: fetch from IMS Profile API and cache for future calls
+  if (authHeader) {
+    try {
+      const profileRes = await fetch('https://ims-na1.adobelogin.com/ims/profile/v1', {
+        headers: { Authorization: authHeader }
+      })
+      if (profileRes.ok) {
+        const profile = await profileRes.json()
+        if (profile.email) {
+          // Cache in user_sessions so subsequent calls hit the fast path
+          try {
+            const sessionCol = await client.collection(COLLECTIONS.USER_SESSIONS)
+            const sessionData = {
+              userId,
+              email: profile.email,
+              displayName: profile.displayName || profile.name || '',
+              registeredAt: getTimezoneDate(params),
+              lastActiveAt: getTimezoneDate(params)
+            }
+            const existing = await safeFindOne(sessionCol, { userId })
+            if (existing) {
+              await sessionCol.updateOne({ userId }, { $set: sessionData })
+            } else {
+              await sessionCol.insertOne(sessionData)
+            }
+          } catch (cacheErr) { /* best-effort session cache */ }
+          return profile.email.toLowerCase()
+        }
+      }
+    } catch (e) {
+      console.warn('IMS profile fallback failed:', e.message)
+    }
+  }
+
+  return null
+}
+
+/**
+ * Enforce app-level permission for an action.
+ * Call at the top of every action handler.
+ * @param {object} client - DB client
+ * @param {object} params - Action params
+ * @param {string} actionName - The action name (e.g. 'dashboard', 'record-crud')
+ * @returns {{ allowed: true, appUser: object } | { allowed: false, response: object }}
+ */
+async function enforceAppPermission (client, params, actionName) {
+  const requiredFeatures = ACTION_FEATURE_MAP[actionName]
+  // null or undefined → unrestricted (any authenticated user)
+  if (!requiredFeatures) return { allowed: true, appUser: null }
+
+  const resolved = await resolveAppUser(client, params)
+  if (!resolved.authorized) {
+    return { allowed: false, response: createErrorResponse(resolved.reason || 'Access denied', 403) }
+  }
+
+  // Super Admin bypasses all checks
+  if (resolved.role && resolved.role.roleId === 'role_super_admin') {
+    return { allowed: true, appUser: resolved }
+  }
+
+  // Check if user has ANY of the required features (OR logic)
+  const hasAny = requiredFeatures.some(f => resolved.permissions[f])
+  if (!hasAny) {
+    return {
+      allowed: false,
+      response: createErrorResponse(`Access denied: you need one of [${requiredFeatures.join(', ')}] permissions.`, 403)
+    }
+  }
+
+  return { allowed: true, appUser: resolved }
 }
 
 /**
@@ -537,6 +957,12 @@ async function validatePartner (client, params) {
  * Supports optional field-level change tracking via `changes` property.
  */
 async function createAuditLog (client, logEntry) {
+  // Check if auditing is enabled — skip silently to save DB space and overhead
+  try {
+    const settings = await getCachedSettings(client)
+    if (settings?.audit?.enabled === false) return null
+  } catch (e) { /* if settings read fails, still log — fail-safe */ }
+
   const auditCol = await client.collection(COLLECTIONS.AUDIT)
   const fullEntry = {
     timestamp: getTimezoneDate(),
@@ -576,7 +1002,8 @@ async function invalidateMetricsCache () {
     ])
 
     // Re-write with very short TTL (5s) + stale flag — serves as a bridge
-    // until the next cron cycle or user-triggered forceRefresh recomputes
+    // so users still see data for 5s; then cache expires and next request
+    // triggers a fresh on-demand recomputation
     const staleOpts = { ttl: 5 }
     if (metricsEntry && metricsEntry.value) {
       const data = JSON.parse(metricsEntry.value)
@@ -659,56 +1086,6 @@ function computeFieldChanges (oldData, newData) {
     }
   }
   return changes
-}
-
-// ============ Version Helpers ============
-
-/**
- * Create a new version document for an entity.
- * Automatically prunes old versions exceeding maxVersionsPerEntity from settings.
- */
-async function createVersion (client, entity, operation, user, changeSummary, recordCount) {
-  const metaCol = await client.collection(COLLECTIONS.METADATA)
-  const versionCol = await client.collection(COLLECTIONS.VERSIONS)
-
-  const metadata = await safeFindOne(metaCol, { masterName: entity })
-  const currentVersion = metadata ? (parseInt((metadata.activeVersionId || 'v0').replace('v', '')) + 1) : 1
-  const versionId = `v${currentVersion}`
-
-  const versionDoc = {
-    versionId,
-    masterName: entity,
-    operation,
-    createdBy: user,
-    createdAt: getTimezoneDate(),
-    recordCount,
-    changeSummary: changeSummary || {},
-    status: 'active'
-  }
-
-  await versionCol.insertOne(versionDoc)
-
-  // Auto-prune old versions based on settings
-  try {
-    const settingsDoc = await getCachedSettings(client)
-    const maxVersions = settingsDoc?.versioning?.maxVersionsPerEntity || 50
-
-    const totalVersions = await versionCol.countDocuments({ masterName: entity })
-    if (totalVersions > maxVersions) {
-      const toRemove = totalVersions - maxVersions
-      const oldVersions = await versionCol.find({ masterName: entity })
-        .sort({ createdAt: 1 })
-        .limit(toRemove)
-        .toArray()
-      for (const old of oldVersions) {
-        await versionCol.deleteOne({ versionId: old.versionId, masterName: entity })
-      }
-    }
-  } catch (e) {
-    // Version pruning is best-effort — don't fail the main operation
-  }
-
-  return versionDoc
 }
 
 // ============ Event Publishing ============
@@ -801,7 +1178,7 @@ const SETTINGS_DOC_ID = 'app-settings'
 function getDefaultInfraLimits (params) {
   const env = params ? getEnvConfig(params) : {}
   return {
-    maxStorageMB: env.mdmMaxStorageMB || 10240,
+    maxStorageMB: env.mdmMaxStorageMB,
     maxDocuments: 500000,
     maxDocumentSizeKB: 512
   }
@@ -898,20 +1275,43 @@ function estimateFileSizeMB (content) {
  * @returns {object} Typed config values
  */
 function getEnvConfig (params) {
+  // All values MUST come from .env → app.config.yaml → action params.
+  // No fallback defaults — missing env vars surface as errors immediately.
+  const required = {
+    DB_REGION: params.DB_REGION,
+    APP_TIMEZONE: params.APP_TIMEZONE,
+    MDM_MAX_STORAGE_MB: params.MDM_MAX_STORAGE_MB,
+    METRICS_CACHE_TTL_MINUTES: params.METRICS_CACHE_TTL_MINUTES,
+    DEFAULT_PAGE_SIZE: params.DEFAULT_PAGE_SIZE,
+    MAX_PAGE_SIZE: params.MAX_PAGE_SIZE,
+    RATE_LIMIT_PER_MINUTE: params.RATE_LIMIT_PER_MINUTE,
+    API_MESH_CACHE_TTL: params.API_MESH_CACHE_TTL,
+    MAX_SCHEMA_FIELDS: params.MAX_SCHEMA_FIELDS,
+    BULK_BATCH_SIZE: params.BULK_BATCH_SIZE,
+    QUERY_TIMEOUT: params.QUERY_TIMEOUT,
+    AUDIT_RETENTION_DAYS: params.AUDIT_RETENTION_DAYS,
+    ARCHIVE_RETENTION_DAYS: params.ARCHIVE_RETENTION_DAYS
+  }
+
+  const missing = Object.entries(required).filter(([, v]) => v === undefined || v === '').map(([k]) => k)
+  if (missing.length > 0) {
+    throw new Error(`Missing required environment variable(s): ${missing.join(', ')}. Configure them in .env and redeploy.`)
+  }
+
   return {
-    dbRegion: params.DB_REGION || 'apac',
-    appTimezone: params.APP_TIMEZONE || 'Asia/Kolkata',
-    mdmMaxStorageMB: Number(params.MDM_MAX_STORAGE_MB) || 10240,
-    metricsCacheTTLMinutes: Number(params.METRICS_CACHE_TTL_MINUTES) || 30,
-    defaultPageSize: Number(params.DEFAULT_PAGE_SIZE) || 25,
-    maxPageSize: Number(params.MAX_PAGE_SIZE) || 100,
-    rateLimitPerMinute: Number(params.RATE_LIMIT_PER_MINUTE) || 1000,
-    apiMeshCacheTTL: Number(params.API_MESH_CACHE_TTL) || 3600,
-    maxSchemaFields: Number(params.MAX_SCHEMA_FIELDS) || 100,
-    maxVersionsPerEntity: Number(params.MAX_VERSIONS_PER_ENTITY) || 50,
-    bulkBatchSize: Number(params.BULK_BATCH_SIZE) || 1000,
-    queryTimeout: Number(params.QUERY_TIMEOUT) || 30000,
-    auditRetentionDays: Number(params.AUDIT_RETENTION_DAYS) || 90
+    dbRegion: String(params.DB_REGION),
+    appTimezone: String(params.APP_TIMEZONE),
+    mdmMaxStorageMB: Number(params.MDM_MAX_STORAGE_MB),
+    metricsCacheTTLMinutes: Number(params.METRICS_CACHE_TTL_MINUTES),
+    defaultPageSize: Number(params.DEFAULT_PAGE_SIZE),
+    maxPageSize: Number(params.MAX_PAGE_SIZE),
+    rateLimitPerMinute: Number(params.RATE_LIMIT_PER_MINUTE),
+    apiMeshCacheTTL: Number(params.API_MESH_CACHE_TTL),
+    maxSchemaFields: Number(params.MAX_SCHEMA_FIELDS),
+    bulkBatchSize: Number(params.BULK_BATCH_SIZE),
+    queryTimeout: Number(params.QUERY_TIMEOUT),
+    auditRetentionDays: Number(params.AUDIT_RETENTION_DAYS),
+    archiveRetentionDays: Number(params.ARCHIVE_RETENTION_DAYS)
   }
 }
 
@@ -973,6 +1373,26 @@ function injectRecordAuditFields (data, auditConfig, actor, params, isCreate) {
   return data
 }
 
+/**
+ * Initialize aio-lib-files with proper credentials.
+ * On deployed Runtime: __OW_API_KEY & __OW_NAMESPACE are env vars → init() with no args works.
+ * On local dev (aio app dev): OW creds are injected as action params, not env vars →
+ *   pass them explicitly so TVM can authenticate.
+ */
+async function getFilesClient () {
+  const filesLib = require('@adobe/aio-lib-files')
+  // Deployed Runtime: __OW_API_KEY & __OW_NAMESPACE as env vars
+  // Local dev (aio app dev): AIO_runtime_auth & AIO_runtime_namespace from .env
+  const owAuth = process.env.__OW_API_KEY || process.env.AIO_runtime_auth
+  const owNamespace = process.env.__OW_NAMESPACE || process.env.AIO_runtime_namespace
+  const source = process.env.__OW_API_KEY ? '__OW_API_KEY' : process.env.AIO_runtime_auth ? 'AIO_runtime_auth' : 'none'
+  console.log(`[getFilesClient] namespace=${owNamespace || 'NONE'}, authSource=${source}`)
+  if (owAuth && owNamespace) {
+    return filesLib.init({ ow: { namespace: owNamespace, auth: owAuth } })
+  }
+  return filesLib.init()
+}
+
 module.exports = {
   getDbClient,
   safeFindOne,
@@ -991,7 +1411,6 @@ module.exports = {
   getUserFromParams,
   createAuditLog,
   computeFieldChanges,
-  createVersion,
   publishMutationEvent,
   createResponse,
   createErrorResponse,
@@ -999,6 +1418,15 @@ module.exports = {
   generateId,
   escapeRegex,
   validateMasterName,
+  APP_FEATURES,
+  ACTION_FEATURE_MAP,
+  DATA_PERMISSIONS,
+  buildDefaultPermissions,
+  resolveAppUser,
+  enforceAppPermission,
+  invalidateResolveCache,
+  seedSystemRoles,
+  getUserEmailFromToken,
   checkStorageGuardrails,
   estimateFileSizeMB,
   getEnvConfig,
@@ -1010,5 +1438,6 @@ module.exports = {
   injectRecordAuditFields,
   registerUserSession,
   deregisterUserSession,
-  extractUserId
+  extractUserId,
+  getFilesClient
 }

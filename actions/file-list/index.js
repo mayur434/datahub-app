@@ -3,7 +3,7 @@
  * Returns list of all managed masters.
  */
 
-const { getDbClient, COLLECTIONS, createResponse, createErrorResponse, validateIMSToken } = require('../mdm-utils')
+const { getDbClient, COLLECTIONS, createResponse, createErrorResponse, validateIMSToken, enforceAppPermission } = require('../mdm-utils')
 
 async function main (params) {
   if (params.__ow_method === 'options') return createResponse({})
@@ -14,13 +14,18 @@ async function main (params) {
   let client
   try {
     client = await getDbClient(params)
+
+    // App-level RBAC
+    const appPerm = await enforceAppPermission(client, params, 'file-list')
+    if (!appPerm.allowed) return appPerm.response
+
     const metaCol = await client.collection(COLLECTIONS.METADATA)
 
     const allFiles = await metaCol.find({ status: { $ne: 'deleted' } })
       .project({
         masterName: 1, displayName: 1, description: 1, originalFileName: 1,
         primaryKey: 1, status: 1, visibility: 1, crudEnabled: 1,
-        collectionName: 1, activeVersionId: 1, recordCount: 1, cache: 1, api: 1,
+        collectionName: 1, recordCount: 1, cache: 1, api: 1,
         createdBy: 1, createdAt: 1, updatedAt: 1
       })
       .sort({ updatedAt: -1 })

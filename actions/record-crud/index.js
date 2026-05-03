@@ -4,7 +4,7 @@
  * Operates on per-master collections (mdm_<masterName>).
  */
 
-const { getDbClient, safeFindOne, COLLECTIONS, getMasterCollection, createVersion, createAuditLog, createResponse, createErrorResponse, validateIMSToken, getUserFromParams, validateMasterName, checkPermission, validateRecord, computeFieldChanges, publishMutationEvent, checkStorageGuardrails, injectRecordAuditFields, getTimezoneDate } = require('../mdm-utils')
+const { getDbClient, safeFindOne, COLLECTIONS, getMasterCollection, createAuditLog, createResponse, createErrorResponse, validateIMSToken, getUserFromParams, validateMasterName, checkPermission, validateRecord, computeFieldChanges, publishMutationEvent, checkStorageGuardrails, injectRecordAuditFields, getTimezoneDate, enforceAppPermission } = require('../mdm-utils')
 
 async function main (params) {
   if (params.__ow_method === 'options') return createResponse({})
@@ -25,6 +25,11 @@ async function main (params) {
     if (!validateMasterName(master)) return createErrorResponse('Invalid master name')
 
     client = await getDbClient(params)
+
+    // App-level RBAC
+    const appPerm = await enforceAppPermission(client, params, 'record-crud')
+    if (!appPerm.allowed) return appPerm.response
+
     const user = await getUserFromParams(params, client)
 
     // RBAC check
@@ -125,7 +130,6 @@ async function handleCreate (client, metaCol, masterCol, metadata, master, data,
 
   await masterCol.insertOne({
     primaryKey: pk,
-    versionId: metadata.activeVersionId,
     data,
     status: 'active',
     deleted: false,

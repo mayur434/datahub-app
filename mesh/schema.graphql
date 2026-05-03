@@ -172,8 +172,12 @@ type Query {
   
   Examples:
     mdmQuery(master: "product", page: 1, pageSize: 25)
-    mdmQuery(master: "product", filters: "{\"brand\":\"Nike\",\"status\":\"active\"}")
-    mdmQuery(master: "product", facets: "true", filters: "{\"brand\":\"Nike\"}")
+    mdmQuery(master: "product", filters: "brand=Nike,status=active")
+    mdmQuery(master: "product", facets: "true", filters: "brand=Nike")
+
+  Filter formats (both supported):
+    Comma-separated key=value (recommended): "brand=Nike,status=active"
+    JSON string (must be URL-encoded if via API Mesh): "%7B%22brand%22%3A%22Nike%22%7D"
   """
   mdmQuery(
     "Master name to query (required)"
@@ -190,7 +194,7 @@ type Query {
     fields: String
     "Force include facets/aggregations: true or false (default: auto based on master config)"
     facets: String
-    "Filters as JSON string of key-value pairs e.g. {\"brand\":\"Nike\",\"status\":\"active\"}"
+    "Filters as comma-separated key=value pairs e.g. brand=Nike,status=active (or URL-encoded JSON)"
     filters: String
   ): MDMQueryResponse!
 
@@ -217,7 +221,7 @@ type Query {
   Examples:
     mdmFacets(master: "product") — config only
     mdmFacets(master: "product", values: "true") — config + live counts
-    mdmFacets(master: "product", values: "true", filters: "{\"brand\":\"Nike\"}") — counts with filter
+    mdmFacets(master: "product", values: "true", filters: "brand=Nike") — counts with filter
   """
   mdmFacets(
     "Master name (required)"

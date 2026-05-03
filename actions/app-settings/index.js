@@ -48,18 +48,11 @@ function buildDefaultSettings (env) {
       enableSorting: true,
       enableFiltering: true
     },
-    versioning: {
-      enabled: true,
-      retentionPolicy: 'last-10-versions',
-      maxVersionsPerEntity: env.maxVersionsPerEntity,
-      autoVersionOnUpload: true,
-      enableRollback: true
-    },
     audit: {
       enabled: true,
       retentionDays: env.auditRetentionDays,
-      cleanupEnabled: false,
       cleanupSchedule: '0 2 * * *',
+      archiveRetentionDays: env.archiveRetentionDays,
       logReadOperations: false,
       logLevel: 'operations',
       alertOnFailure: false,
@@ -165,7 +158,13 @@ async function handleGet (settingsCol, DEFAULT_SETTINGS) {
     return createResponse({ settings: DEFAULT_SETTINGS, isDefault: true })
   }
   const { _id, settingsId, ...rest } = settings
-  return createResponse({ settings: deepMerge(DEFAULT_SETTINGS, rest), isDefault: false })
+  const merged = deepMerge(DEFAULT_SETTINGS, rest)
+
+  // Enforce env-sourced infrastructure values — these ALWAYS come from .env,
+  // never from saved DB settings, to prevent stale overrides.
+  enforceEnvValues(merged, DEFAULT_SETTINGS)
+
+  return createResponse({ settings: merged, isDefault: false })
 }
 
 async function handleUpdate (client, settingsCol, params, user, DEFAULT_SETTINGS) {
@@ -184,6 +183,10 @@ async function handleUpdate (client, settingsCol, params, user, DEFAULT_SETTINGS
 
   // Deep merge: DEFAULT → existing → new settings
   const merged = deepMerge(DEFAULT_SETTINGS, existing || {}, settings)
+
+  // Enforce env-sourced values — prevent stale DB values from persisting
+  enforceEnvValues(merged, DEFAULT_SETTINGS)
+
   const settingsDoc = {
     ...merged,
     settingsId: SETTINGS_DOC_ID,
@@ -274,13 +277,6 @@ function validateSettings (settings) {
     }
   }
 
-  if (settings.versioning) {
-    const v = settings.versioning
-    if (v.maxVersionsPerEntity !== undefined && (v.maxVersionsPerEntity < 1 || v.maxVersionsPerEntity > 500)) {
-      errors.push('versioning.maxVersionsPerEntity must be 1–500')
-    }
-  }
-
   if (settings.security) {
     const sec = settings.security
     if (sec.sessionTimeout !== undefined && (sec.sessionTimeout < 300 || sec.sessionTimeout > 86400)) {
@@ -299,6 +295,43 @@ function validateSettings (settings) {
   }
 
   return errors
+}
+
+/**
+ * Force env-sourced infrastructure values back into merged settings.
+ * These are deployment-level configs that must NEVER be overridden by DB-saved values.
+ * If .env changes, the next GET reflects the new value immediately.
+ */
+function enforceEnvValues (merged, defaults) {
+  // guardrails — maxStorageMB is deployment-level
+  if (merged.guardrails) merged.guardrails.maxStorageMB = defaults.guardrails.maxStorageMB
+
+  // general — timezone is deployment-level
+  if (merged.general) merged.general.timezone = defaults.general.timezone
+
+  // performance — dbRegion, queryTimeout, bulkBatchSize are deployment-level
+  if (merged.performance) {
+    merged.performance.dbRegion = defaults.performance.dbRegion
+    merged.performance.queryTimeout = defaults.performance.queryTimeout
+    merged.performance.bulkBatchSize = defaults.performance.bulkBatchSize
+  }
+
+  // api — env-sourced defaults
+  if (merged.api) {
+    merged.api.defaultPageSize = defaults.api.defaultPageSize
+    merged.api.maxPageSize = defaults.api.maxPageSize
+    merged.api.rateLimitPerMinute = defaults.api.rateLimitPerMinute
+    merged.api.apiMeshCacheTTL = defaults.api.apiMeshCacheTTL
+  }
+
+  // audit — retentionDays and archiveRetentionDays from env
+  if (merged.audit) {
+    merged.audit.retentionDays = defaults.audit.retentionDays
+    merged.audit.archiveRetentionDays = defaults.audit.archiveRetentionDays
+  }
+
+  // dataManagement — maxSchemaFields from env
+  if (merged.dataManagement) merged.dataManagement.maxSchemaFields = defaults.dataManagement.maxSchemaFields
 }
 
 function deepMerge (...objects) {

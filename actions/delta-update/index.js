@@ -4,7 +4,7 @@
  * Operates on per-master collections.
  */
 
-const { getDbClient, safeFindOne, COLLECTIONS, getMasterCollection, parseCSV, createVersion, createAuditLog, createResponse, createErrorResponse, validateIMSToken, getUserFromParams, checkPermission, checkStorageGuardrails, estimateFileSizeMB, injectRecordAuditFields, getTimezoneDate } = require('../mdm-utils')
+const { getDbClient, safeFindOne, COLLECTIONS, getMasterCollection, parseCSV, createAuditLog, createResponse, createErrorResponse, validateIMSToken, getUserFromParams, checkPermission, checkStorageGuardrails, estimateFileSizeMB, injectRecordAuditFields, getTimezoneDate, enforceAppPermission } = require('../mdm-utils')
 
 async function main (params) {
   if (params.__ow_method === 'options') return createResponse({})
@@ -23,6 +23,11 @@ async function main (params) {
     }
 
     client = await getDbClient(params)
+
+    // App-level RBAC
+    const appPerm = await enforceAppPermission(client, params, 'delta-update')
+    if (!appPerm.allowed) return appPerm.response
+
     const user = await getUserFromParams(params, client)
 
     // RBAC check
@@ -95,7 +100,7 @@ async function main (params) {
             if (existing) { errors.push(`Row ${i + 2}: Record '${pk}' already exists`); skipped++ }
             else {
               if (auditConfig) injectRecordAuditFields(data, auditConfig, user, params, true)
-              await masterCol.insertOne({ primaryKey: pk, versionId: metadata.activeVersionId, data, status: 'active', deleted: false, createdAt: getTimezoneDate(params), createdBy: user, updatedAt: getTimezoneDate(params), updatedBy: user })
+              await masterCol.insertOne({ primaryKey: pk, data, status: 'active', deleted: false, createdAt: getTimezoneDate(params), createdBy: user, updatedAt: getTimezoneDate(params), updatedBy: user })
               inserted++
             }
             break
@@ -126,7 +131,7 @@ async function main (params) {
           updated++
         } else {
           if (auditConfig) injectRecordAuditFields(data, auditConfig, user, params, true)
-          await masterCol.insertOne({ primaryKey: pk, versionId: metadata.activeVersionId, data, status: 'active', deleted: false, createdAt: getTimezoneDate(params), createdBy: user, updatedAt: getTimezoneDate(params), updatedBy: user })
+          await masterCol.insertOne({ primaryKey: pk, data, status: 'active', deleted: false, createdAt: getTimezoneDate(params), createdBy: user, updatedAt: getTimezoneDate(params), updatedBy: user })
           inserted++
         }
       } else if (deltaMode === 'update-only') {
@@ -141,7 +146,7 @@ async function main (params) {
         if (existing) { errors.push(`Row ${i + 2}: Record '${pk}' already exists (insert-only mode)`); skipped++ }
         else {
           if (auditConfig) injectRecordAuditFields(data, auditConfig, user, params, true)
-          await masterCol.insertOne({ primaryKey: pk, versionId: metadata.activeVersionId, data, status: 'active', deleted: false, createdAt: getTimezoneDate(params), createdBy: user, updatedAt: getTimezoneDate(params), updatedBy: user })
+          await masterCol.insertOne({ primaryKey: pk, data, status: 'active', deleted: false, createdAt: getTimezoneDate(params), createdBy: user, updatedAt: getTimezoneDate(params), updatedBy: user })
           inserted++
         }
       }
@@ -151,13 +156,10 @@ async function main (params) {
     const allRecs = await masterCol.find({}).toArray()
     const count = allRecs.filter(r => r.deleted !== true).length
 
-    // Create version
-    const version = await createVersion(client, master, 'delta-update', user, { inserted, updated, deleted }, count)
-
     // Update metadata
     await metaCol.updateOne(
       { masterName: master },
-      { $set: { activeVersionId: version.versionId, recordCount: count, updatedAt: getTimezoneDate(params), lastModifiedBy: user } }
+      { $set: { recordCount: count, updatedAt: getTimezoneDate(params), lastModifiedBy: user } }
     )
 
     // Audit
@@ -166,7 +168,6 @@ async function main (params) {
       operation: 'delta-update',
       actor: user,
       status: errors.length === 0 ? 'success' : 'partial',
-      afterVersion: version.versionId,
       affectedRecords: inserted + updated + deleted
     })
 
@@ -174,7 +175,6 @@ async function main (params) {
       master,
       operation: 'delta-update',
       mode: deltaMode,
-      versionId: version.versionId,
       inserted,
       updated,
       deleted,

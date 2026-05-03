@@ -4,7 +4,7 @@
  * Deletes old records, inserts new ones from CSV into per-master collection.
  */
 
-const { getDbClient, safeFindOne, COLLECTIONS, getMasterCollection, parseCSV, validateCSV, createVersion, createAuditLog, createResponse, createErrorResponse, validateIMSToken, getUserFromParams, checkPermission, checkStorageGuardrails, estimateFileSizeMB, injectRecordAuditFields, getTimezoneDate } = require('../mdm-utils')
+const { getDbClient, safeFindOne, COLLECTIONS, getMasterCollection, parseCSV, validateCSV, createAuditLog, createResponse, createErrorResponse, validateIMSToken, getUserFromParams, checkPermission, checkStorageGuardrails, estimateFileSizeMB, injectRecordAuditFields, getTimezoneDate, enforceAppPermission } = require('../mdm-utils')
 
 async function main (params) {
   if (params.__ow_method === 'options') return createResponse({})
@@ -21,6 +21,11 @@ async function main (params) {
     }
 
     client = await getDbClient(params)
+
+    // App-level RBAC
+    const appPerm = await enforceAppPermission(client, params, 'full-update')
+    if (!appPerm.allowed) return appPerm.response
+
     const user = await getUserFromParams(params, client)
 
     // RBAC check
@@ -66,19 +71,12 @@ async function main (params) {
       }
     }
 
-    // Create version
-    const version = await createVersion(client, master, 'full-update', user, {
-      inserted: records.length, updated: 0, deleted: oldRecordCount
-    }, records.length)
-
     // Insert new records first (before deleting old) for atomicity
-    const newVersionId = version.versionId
     const auditConfig = metadata.recordAudit
     const recordDocs = records.map(record => {
       if (auditConfig) injectRecordAuditFields(record, auditConfig, user, params, true)
       return {
         primaryKey: record[metadata.primaryKey],
-        versionId: newVersionId,
         data: record,
         status: 'active',
         deleted: false,
@@ -91,17 +89,18 @@ async function main (params) {
 
     await masterCol.insertMany(recordDocs)
 
-    // Delete old records (those NOT in the new version)
+    // Delete old records (those NOT in the new batch)
     const allRecords = await masterCol.find({}).toArray()
-    const toDelete = allRecords.filter(r => r.versionId !== newVersionId)
+    const newPKs = new Set(recordDocs.map(r => r.primaryKey))
+    const toDelete = allRecords.filter(r => !newPKs.has(r.primaryKey))
     for (const rec of toDelete) {
-      await masterCol.deleteOne({ primaryKey: rec.primaryKey, versionId: rec.versionId })
+      await masterCol.deleteOne({ primaryKey: rec.primaryKey })
     }
 
     // Update metadata
     await metaCol.updateOne(
       { masterName: master },
-      { $set: { activeVersionId: version.versionId, recordCount: records.length, updatedAt: getTimezoneDate(params), lastModifiedBy: user } }
+      { $set: { recordCount: records.length, updatedAt: getTimezoneDate(params), lastModifiedBy: user } }
     )
 
 
@@ -111,7 +110,6 @@ async function main (params) {
       operation: 'full-update',
       actor: user,
       status: 'success',
-      afterVersion: version.versionId,
       affectedRecords: records.length,
       
     })
@@ -119,7 +117,6 @@ async function main (params) {
     return createResponse({
       master,
       operation: 'full-update',
-      versionId: version.versionId,
       inserted: records.length,
       deleted: oldRecordCount,
       status: 'success'
