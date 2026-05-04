@@ -57,7 +57,8 @@ const COLLECTIONS = {
   PARTNERS: 'partners',
   USER_SESSIONS: 'user_sessions',
   APP_USERS: 'app_users',
-  APP_ROLES: 'app_roles'
+  APP_ROLES: 'app_roles',
+  COUNTERS: 'counters'
 }
 
 /**
@@ -313,8 +314,7 @@ async function resolveAppUser (client, params) {
   // 4. Check if app_users collection has any active users
   let totalUsers = 0
   try {
-    const allUsers = await usersCol.find({}).toArray()
-    totalUsers = allUsers.filter(u => u.status === 'active').length
+    totalUsers = await usersCol.countDocuments({ status: 'active' })
   } catch (e) { /* collection may not exist */ }
 
   // 5. Bootstrap: if no users exist and email matches INITIAL_ADMIN_EMAIL
@@ -678,8 +678,29 @@ function validateCSV (headers, records, metadata) {
  *
  * Returns array of error strings (empty = valid).
  */
-function validateRecord (data, schema) {
+function validateRecord (data, schema, opts = {}) {
   const errors = []
+  const schemaFieldNames = new Set(schema.map(f => f.name))
+  const primaryKey = opts.primaryKey || null
+
+  // Strip unknown fields — only allow schema-defined fields and system audit fields
+  const SYSTEM_AUDIT_FIELDS = ['_createdAt', '_updatedAt', '_createdBy', '_updatedBy']
+  const unknownFields = Object.keys(data).filter(k => !schemaFieldNames.has(k) && !SYSTEM_AUDIT_FIELDS.includes(k))
+  for (const uf of unknownFields) {
+    delete data[uf]
+  }
+
+  // After stripping, check that at least one non-PK schema field has a value
+  const hasAnyDataField = schema.some(f => {
+    if (f.name === primaryKey) return false
+    const v = data[f.name]
+    return v !== undefined && v !== null && v !== ''
+  })
+  if (!hasAnyDataField) {
+    const expectedFields = schema.filter(f => f.name !== primaryKey).map(f => f.name)
+    errors.push('No valid schema fields provided. Expected fields: ' + expectedFields.join(', '))
+    return errors
+  }
 
   for (const field of schema) {
     const value = data[field.name]
@@ -1393,6 +1414,35 @@ async function getFilesClient () {
   return filesLib.init()
 }
 
+/**
+ * Atomic auto-increment counter using findOneAndUpdate with $inc.
+ * Uses a dedicated 'counters' collection with one document per master.
+ * Returns the next integer ID for the given master's primary key.
+ */
+async function getNextSequenceId (client, masterName, batchSize = 1) {
+  const countersCol = await client.collection(COLLECTIONS.COUNTERS)
+  const result = await countersCol.findOneAndUpdate(
+    { _id: masterName },
+    { $inc: { seq: batchSize } },
+    { upsert: true, returnDocument: 'after' }
+  )
+  // result.value for older drivers, result for newer ones
+  const doc = result.value || result
+  return doc.seq
+}
+
+/**
+ * Decompress gzip-compressed csvContent sent by the browser.
+ * If csvCompressed flag is not set, returns csvContent as-is.
+ */
+function decompressCsvContent (params) {
+  if (!params.csvCompressed || !params.csvContent) return params.csvContent
+  const zlib = require('zlib')
+  const compressed = Buffer.from(params.csvContent, 'base64')
+  const decompressed = zlib.gunzipSync(compressed)
+  return decompressed.toString('utf-8')
+}
+
 module.exports = {
   getDbClient,
   safeFindOne,
@@ -1439,5 +1489,7 @@ module.exports = {
   registerUserSession,
   deregisterUserSession,
   extractUserId,
-  getFilesClient
+  getFilesClient,
+  decompressCsvContent,
+  getNextSequenceId
 }

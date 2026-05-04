@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react'
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import {
   Heading, View, Flex, Button, TextField, Text, ProgressCircle, Well,
   Picker, Item, TextArea, Divider, SearchField, StatusLight, ActionButton,
@@ -7,6 +7,7 @@ import {
 import { useParams, useNavigate } from 'react-router-dom'
 import { queryData, createRecord, patchRecord, deleteRecord, fetchFileDetail, fullUpdate, deltaUpdate, invokeAction } from './actionInvoker'
 import { useNotifications } from './NotificationProvider'
+import { useApp } from './AppContext'
 import { clearSwrCache } from './useSwrCache'
 import { useDebounce } from './useDebounce'
 import Add from '@spectrum-icons/workflow/Add'
@@ -18,24 +19,15 @@ function RecordManager ({ runtime, ims }) {
   const { master } = useParams()
   const navigate = useNavigate()
   const notify = useNotifications()
+  const { appSettings } = useApp()
+  const fileRef = useRef(null)
   const [file, setFile] = useState(null)
   const [records, setRecords] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [page, setPage] = useState(1)
   const [total, setTotal] = useState(0)
-  const [pageSize, setPageSize] = useState(25)
-
-  // Load default page size from settings on mount
-  useEffect(() => {
-    (async () => {
-      try {
-        const result = await invokeAction('app-settings', {}, ims, 'GET')
-        const defaultPs = result?.settings?.api?.defaultPageSize
-        if (defaultPs) setPageSize(defaultPs)
-      } catch (_) { /* keep default */ }
-    })()
-  }, [])
+  const [pageSize, setPageSize] = useState(appSettings.defaultPageSize || appSettings.uiPageSize || 25)
 
   // Create/Edit form
   const [showCreateForm, setShowCreateForm] = useState(false)
@@ -64,6 +56,11 @@ function RecordManager ({ runtime, ims }) {
   // Selection
   const [selectedRecords, setSelectedRecords] = useState(new Set())
 
+  // Reset cached file metadata only when master changes
+  useEffect(() => {
+    fileRef.current = null
+  }, [master])
+
   useEffect(() => {
     loadData()
   }, [master, page, pageSize, sortField, sortDir])
@@ -72,10 +69,8 @@ function RecordManager ({ runtime, ims }) {
     try {
       setLoading(true)
       setRefreshing(true)
-      const fileResult = await fetchFileDetail(master, ims)
-      setFile(fileResult.file)
 
-      const queryParams = { page, pageSize }
+      const queryParams = { page, pageSize, includeMeta: !fileRef.current }
       if (filterField && filterValue) {
         queryParams[filterField] = filterValue
       }
@@ -85,6 +80,18 @@ function RecordManager ({ runtime, ims }) {
       }
 
       const dataResult = await queryData(master, queryParams, ims)
+
+      // Use piggybacked file metadata if present (first load), otherwise use cached ref
+      if (dataResult.file && !fileRef.current) {
+        fileRef.current = dataResult.file
+        setFile(dataResult.file)
+      } else if (!fileRef.current) {
+        // Fallback: fetch file metadata separately
+        const fileResult = await fetchFileDetail(master, ims)
+        fileRef.current = fileResult.file
+        setFile(fileResult.file)
+      }
+
       setRecords(dataResult.data || [])
       setTotal(dataResult.total || 0)
       setError(null)
@@ -103,6 +110,7 @@ function RecordManager ({ runtime, ims }) {
       notify.success('Record created successfully')
       clearSwrCache('dashboard')
       clearSwrCache('file-list')
+      fileRef.current = null // Refresh metadata (recordCount changed)
       setShowCreateForm(false)
       setFormData({})
       await loadData()
@@ -150,6 +158,7 @@ function RecordManager ({ runtime, ims }) {
       notify.success('Record deleted')
       clearSwrCache('dashboard')
       clearSwrCache('file-list')
+      fileRef.current = null // Refresh metadata (recordCount changed)
       await loadData()
     } catch (e) {
       notify.error(`Delete failed: ${e.message}`)
@@ -169,6 +178,7 @@ function RecordManager ({ runtime, ims }) {
       }
       notify.success(`Bulk operation complete: ${result.message || 'Success'}`)
       clearSwrCache()
+      fileRef.current = null // Refresh metadata (recordCount changed)
       setShowBulkUpload(false)
       setBulkCsvContent('')
       await loadData()
@@ -319,7 +329,7 @@ function RecordManager ({ runtime, ims }) {
           />
           <Picker label='Filter by' selectedKey={filterField} onSelectionChange={setFilterField} width='size-1600'>
             <Item key=''>No filter</Item>
-            {file?.schema?.filter(s => s.queryable).map(s => (
+            {file?.schema?.map(s => (
               <Item key={s.name}>{s.name}</Item>
             ))}
           </Picker>
@@ -422,14 +432,18 @@ function RecordManager ({ runtime, ims }) {
                 {file?.schema?.map(field => (
                   <th
                     key={field.name}
-                    className={field.queryable ? 'mdm-table__sortable-header' : ''}
-                    onClick={field.queryable ? () => handleSort(field.name) : undefined}
+                    className='mdm-table__sortable-header'
+                    onClick={() => handleSort(field.name)}
+                    title={`Sort by ${field.name}`}
                   >
-                    <span>{field.name}</span>
-                    {field.name === file.primaryKey && <span className='mdm-badge-pk'>PK</span>}
-                    {sortField === field.name && (
-                      <span className='mdm-table__sort-indicator'>{sortDir === 'asc' ? '↑' : '↓'}</span>
-                    )}
+                    <span className='mdm-table__header-content'>
+                      <span>{field.name}</span>
+                      {field.name === file.primaryKey && <span className='mdm-badge-pk'>PK</span>}
+                      {field.queryable && <span className='mdm-badge-queryable'>Q</span>}
+                      <span className={`mdm-table__sort-indicator ${sortField === field.name ? 'mdm-table__sort-indicator--active' : ''}`}>
+                        {sortField === field.name ? (sortDir === 'asc' ? '▲' : '▼') : '⇅'}
+                      </span>
+                    </span>
                   </th>
                 ))}
                 {SYSTEM_FIELDS.map(sf => (

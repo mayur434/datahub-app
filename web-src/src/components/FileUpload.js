@@ -6,6 +6,7 @@ import {
 import { useNavigate } from 'react-router-dom'
 import { uploadFile, invokeAction } from './actionInvoker'
 import { useNotifications } from './NotificationProvider'
+import { useApp } from './AppContext'
 import { clearSwrCache } from './useSwrCache'
 
 const SYSTEM_FIELDS = ['master_id', 'createdAt', 'updatedAt', 'createdBy', 'updatedBy']
@@ -13,6 +14,7 @@ const SYSTEM_FIELDS = ['master_id', 'createdAt', 'updatedAt', 'createdBy', 'upda
 function FileUpload ({ runtime, ims }) {
   const navigate = useNavigate()
   const notify = useNotifications()
+  const { appSettings } = useApp()
   const [step, setStep] = useState(1)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
@@ -39,32 +41,24 @@ function FileUpload ({ runtime, ims }) {
   const [requiredFields, setRequiredFields] = useState([])
   const [facetableFields, setFacetableFields] = useState([])
 
-  // Record-level audit config (selected during master creation, immutable after)
-  const [auditCreatedAt, setAuditCreatedAt] = useState(true)
-  const [auditUpdatedAt, setAuditUpdatedAt] = useState(true)
-  const [auditCreatedBy, setAuditCreatedBy] = useState(false)
-  const [auditUpdatedBy, setAuditUpdatedBy] = useState(false)
+  // Record-level audit — always enabled for all masters (system-managed)
+  const auditCreatedAt = true
+  const auditUpdatedAt = true
+  const auditCreatedBy = true
+  const auditUpdatedBy = true
 
   // Drag and drop
   const [isDragging, setIsDragging] = useState(false)
   const fileInputRef = useRef(null)
 
-  // Settings-driven limits
-  const [maxFileSizeMB, setMaxFileSizeMB] = useState(10)
-  const [maxRecordsPerFile, setMaxRecordsPerFile] = useState(50000)
+  // Settings-driven limits — prefer AppContext (piggybacked on resolveCurrentUser), no extra cold-start
+  const [maxFileSizeMB, setMaxFileSizeMB] = useState(appSettings.maxFileSizeMB || 10)
+  const [maxRecordsPerFile, setMaxRecordsPerFile] = useState(appSettings.maxRecordsPerFile || 50000)
 
   useEffect(() => {
-    async function loadLimits () {
-      try {
-        const result = await invokeAction('app-settings', {}, ims, 'GET')
-        const s = result.settings || {}
-        const dm = s.dataManagement || {}
-        if (dm.maxFileSizeMB) setMaxFileSizeMB(dm.maxFileSizeMB)
-        if (dm.maxRecordsPerFile) setMaxRecordsPerFile(dm.maxRecordsPerFile)
-      } catch (e) { /* use defaults */ }
-    }
-    loadLimits()
-  }, [])
+    if (appSettings.maxFileSizeMB) setMaxFileSizeMB(appSettings.maxFileSizeMB)
+    if (appSettings.maxRecordsPerFile) setMaxRecordsPerFile(appSettings.maxRecordsPerFile)
+  }, [appSettings])
 
   function handleFileSelect (e) {
     const file = e.target.files[0]
@@ -267,7 +261,7 @@ function FileUpload ({ runtime, ims }) {
               <div className='mdm-dropzone__prompt'>
                 <div className='mdm-dropzone__icon'>📄</div>
                 <Text><strong>Drop CSV file here</strong></Text>
-                <Text UNSAFE_className='mdm-text-muted'>or click to browse • Max {maxFileSizeMB}MB</Text>
+                <Text UNSAFE_className='mdm-text-muted'>or click to browse</Text>
               </div>
             )}
           </div>
@@ -335,22 +329,10 @@ function FileUpload ({ runtime, ims }) {
               </Checkbox>
 
               <Divider size='S' marginY='size-100' />
-              <Text UNSAFE_style={{ fontWeight: 'bold' }}>Record-Level Audit Fields</Text>
               <Text UNSAFE_style={{ fontSize: '12px', color: 'var(--spectrum-global-color-gray-600)' }}>
-                Select which system audit columns to add to each record. This cannot be changed after master creation.
+                System audit fields (_createdAt, _updatedAt, _createdBy, _updatedBy) are automatically
+                added to every record. These fields are managed by the system and visible only in Admin UI and exports.
               </Text>
-              <Checkbox isSelected={auditCreatedAt} onChange={setAuditCreatedAt}>
-                _createdAt — Initial insert timestamp
-              </Checkbox>
-              <Checkbox isSelected={auditUpdatedAt} onChange={setAuditUpdatedAt}>
-                _updatedAt — Last update timestamp
-              </Checkbox>
-              <Checkbox isSelected={auditCreatedBy} onChange={setAuditCreatedBy}>
-                _createdBy — User/partner who created the record
-              </Checkbox>
-              <Checkbox isSelected={auditUpdatedBy} onChange={setAuditUpdatedBy}>
-                _updatedBy — User/partner who last updated the record
-              </Checkbox>
             </Flex>
           </Well>
           <Flex justifyContent='space-between' marginTop='size-200'>
@@ -424,12 +406,7 @@ function FileUpload ({ runtime, ims }) {
               <Text><strong>Primary Key:</strong> {primaryKey || 'master_id (auto-generated)'}</Text>
               <Text><strong>Visibility:</strong> {visibility}</Text>
               <Text><strong>CRUD Enabled:</strong> {crudEnabled ? 'Yes' : 'No'}</Text>
-              <Text><strong>Record Audit Fields:</strong> {[
-                auditCreatedAt && '_createdAt',
-                auditUpdatedAt && '_updatedAt',
-                auditCreatedBy && '_createdBy',
-                auditUpdatedBy && '_updatedBy'
-              ].filter(Boolean).join(', ') || '(none)'}</Text>
+              <Text><strong>Record Audit Fields:</strong> _createdAt, _updatedAt, _createdBy, _updatedBy (auto-managed)</Text>
               <Text><strong>Queryable Fields:</strong> {queryableFields.join(', ') || '(none)'}</Text>\n              <Text><strong>Required Fields:</strong> {requiredFields.join(', ') || '(none)'}</Text>
               <Text><strong>Facetable Fields:</strong> {facetableFields.join(', ') || '(none)'}</Text>
               <Text><strong>Total Columns:</strong> {headers.length}</Text>

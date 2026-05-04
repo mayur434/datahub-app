@@ -5,6 +5,7 @@ import {
 } from '@adobe/react-spectrum'
 import { useNavigate } from 'react-router-dom'
 import { fetchAuditLogs, fetchFileList, fetchAuditArchives, triggerAuditCleanup, triggerArchivePurge } from './actionInvoker'
+import useSwrCache from './useSwrCache'
 import { useDebounce } from './useDebounce'
 import { useNotifications } from './NotificationProvider'
 import Refresh from '@spectrum-icons/workflow/Refresh'
@@ -14,10 +15,13 @@ function AuditLogs ({ runtime, ims }) {
   const navigate = useNavigate()
   const notify = useNotifications()
   const [logs, setLogs] = useState([])
-  const [entities, setEntities] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [total, setTotal] = useState(0)
+
+  // SWR cache for entity list — rarely changes, avoids extra cold-start on every AuditLogs visit
+  const entitiesSwr = useSwrCache('audit-entities', () => fetchFileList(ims).then(r => r.files || []).catch(() => []), { ttl: 5 * 60 * 1000 })
+  const entities = entitiesSwr.data || []
 
   // Filters
   const [filterMaster, setFilterMaster] = useState('')
@@ -42,25 +46,12 @@ function AuditLogs ({ runtime, ims }) {
   const debouncedUser = useDebounce(filterUser, 400)
 
   useEffect(() => {
-    loadEntities()
-  }, [])
-
-  useEffect(() => {
     loadLogs()
   }, [filterMaster, debouncedUser, filterAction, page])
 
   useEffect(() => {
     if (activeTab === 'archives') loadArchives()
   }, [activeTab, archivesPage])
-
-  async function loadEntities () {
-    try {
-      const result = await fetchFileList(ims)
-      setEntities(result.files || [])
-    } catch (e) {
-      console.error('Failed to load entities', e)
-    }
-  }
 
   async function loadLogs () {
     try {

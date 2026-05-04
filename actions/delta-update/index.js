@@ -4,7 +4,7 @@
  * Operates on per-master collections.
  */
 
-const { getDbClient, safeFindOne, COLLECTIONS, getMasterCollection, parseCSV, createAuditLog, createResponse, createErrorResponse, validateIMSToken, getUserFromParams, checkPermission, checkStorageGuardrails, estimateFileSizeMB, injectRecordAuditFields, getTimezoneDate, enforceAppPermission } = require('../mdm-utils')
+const { getDbClient, safeFindOne, COLLECTIONS, getMasterCollection, parseCSV, createAuditLog, createResponse, createErrorResponse, validateIMSToken, getUserFromParams, checkPermission, checkStorageGuardrails, estimateFileSizeMB, enforceAppPermission, decompressCsvContent } = require('../mdm-utils')
 
 async function main (params) {
   if (params.__ow_method === 'options') return createResponse({})
@@ -15,7 +15,8 @@ async function main (params) {
   let client
   try {
     const master = params.master || params.entity
-    const { csvContent, mode } = params
+    const csvContent = decompressCsvContent(params)
+    const { mode } = params
     const deltaMode = mode || 'upsert'
 
     if (!master || !csvContent) {
@@ -63,11 +64,10 @@ async function main (params) {
       return createErrorResponse(`Storage guardrail: ${guardrail.reason}`, 507)
     }
 
-    // Batch-fetch all existing records upfront to avoid N+1 queries
+    // Batch-fetch existing records upfront using $in query to avoid N+1
     const pks = records.map(r => r[metadata.primaryKey]).filter(Boolean)
     const existingRecords = pks.length > 0
-      ? await masterCol.find({}).toArray()
-        .then(all => all.filter(r => r.deleted !== true && pks.includes(r.primaryKey)))
+      ? await masterCol.find({ primaryKey: { $in: pks }, deleted: { $ne: true } }).toArray()
       : []
     const existingMap = new Map(existingRecords.map(r => [r.primaryKey, r]))
 
@@ -77,10 +77,25 @@ async function main (params) {
     let skipped = 0
     const errors = []
     const auditConfig = metadata.recordAudit
+    const bulkOps = []
+    const now = new Date()
+
+    function injectAudit (data, isCreate) {
+      if (!auditConfig || !auditConfig.enabled) return
+      if (isCreate) {
+        if (auditConfig.createdAt) data._createdAt = now
+        if (auditConfig.updatedAt) data._updatedAt = now
+        if (auditConfig.createdBy) data._createdBy = user
+        if (auditConfig.updatedBy) data._updatedBy = user
+      } else {
+        if (auditConfig.updatedAt) data._updatedAt = now
+        if (auditConfig.updatedBy) data._updatedBy = user
+      }
+    }
 
     for (let i = 0; i < records.length; i++) {
       const record = records[i]
-      const pk = record[metadata.primaryKey]
+      const pk = record[metadata.primaryKey] ? String(record[metadata.primaryKey]) : null
       const action = record._action ? record._action.toUpperCase() : null
 
       if (!pk && deltaMode !== 'mixed') {
@@ -99,8 +114,8 @@ async function main (params) {
           case 'CREATE':
             if (existing) { errors.push(`Row ${i + 2}: Record '${pk}' already exists`); skipped++ }
             else {
-              if (auditConfig) injectRecordAuditFields(data, auditConfig, user, params, true)
-              await masterCol.insertOne({ primaryKey: pk, data, status: 'active', deleted: false, createdAt: getTimezoneDate(params), createdBy: user, updatedAt: getTimezoneDate(params), updatedBy: user })
+              injectAudit(data, true)
+              bulkOps.push({ insertOne: { document: { primaryKey: pk, data, status: 'active', deleted: false, createdAt: now, createdBy: user, updatedAt: now, updatedBy: user } } })
               inserted++
             }
             break
@@ -108,15 +123,15 @@ async function main (params) {
             if (!existing) { errors.push(`Row ${i + 2}: Record '${pk}' not found`); skipped++ }
             else {
               const mergedData = { ...existing.data, ...data }
-              if (auditConfig) injectRecordAuditFields(mergedData, auditConfig, user, params, false)
-              await masterCol.updateOne({ primaryKey: pk }, { $set: { data: mergedData, updatedAt: getTimezoneDate(params), updatedBy: user } })
+              injectAudit(mergedData, false)
+              bulkOps.push({ updateOne: { filter: { primaryKey: pk }, update: { $set: { data: mergedData, updatedBy: user }, $currentDate: { updatedAt: true } } } })
               updated++
             }
             break
           case 'DELETE':
             if (!existing) { errors.push(`Row ${i + 2}: Record '${pk}' not found`); skipped++ }
             else {
-              await masterCol.updateOne({ primaryKey: pk }, { $set: { deleted: true, status: 'deleted', updatedAt: getTimezoneDate(params), updatedBy: user } })
+              bulkOps.push({ updateOne: { filter: { primaryKey: pk }, update: { $set: { deleted: true, status: 'deleted', updatedBy: user }, $currentDate: { updatedAt: true } } } })
               deleted++
             }
             break
@@ -126,40 +141,44 @@ async function main (params) {
       } else if (deltaMode === 'upsert') {
         if (existing) {
           const mergedData = { ...existing.data, ...data }
-          if (auditConfig) injectRecordAuditFields(mergedData, auditConfig, user, params, false)
-          await masterCol.updateOne({ primaryKey: pk }, { $set: { data: mergedData, updatedAt: getTimezoneDate(params), updatedBy: user } })
+          injectAudit(mergedData, false)
+          bulkOps.push({ updateOne: { filter: { primaryKey: pk }, update: { $set: { data: mergedData, updatedBy: user }, $currentDate: { updatedAt: true } } } })
           updated++
         } else {
-          if (auditConfig) injectRecordAuditFields(data, auditConfig, user, params, true)
-          await masterCol.insertOne({ primaryKey: pk, data, status: 'active', deleted: false, createdAt: getTimezoneDate(params), createdBy: user, updatedAt: getTimezoneDate(params), updatedBy: user })
+          injectAudit(data, true)
+          bulkOps.push({ insertOne: { document: { primaryKey: pk, data, status: 'active', deleted: false, createdAt: now, createdBy: user, updatedAt: now, updatedBy: user } } })
           inserted++
         }
       } else if (deltaMode === 'update-only') {
         if (!existing) { errors.push(`Row ${i + 2}: Record '${pk}' not found (update-only mode)`); skipped++ }
         else {
           const mergedData = { ...existing.data, ...data }
-          if (auditConfig) injectRecordAuditFields(mergedData, auditConfig, user, params, false)
-          await masterCol.updateOne({ primaryKey: pk }, { $set: { data: mergedData, updatedAt: getTimezoneDate(params), updatedBy: user } })
+          injectAudit(mergedData, false)
+          bulkOps.push({ updateOne: { filter: { primaryKey: pk }, update: { $set: { data: mergedData, updatedBy: user }, $currentDate: { updatedAt: true } } } })
           updated++
         }
       } else if (deltaMode === 'insert-only') {
         if (existing) { errors.push(`Row ${i + 2}: Record '${pk}' already exists (insert-only mode)`); skipped++ }
         else {
-          if (auditConfig) injectRecordAuditFields(data, auditConfig, user, params, true)
-          await masterCol.insertOne({ primaryKey: pk, data, status: 'active', deleted: false, createdAt: getTimezoneDate(params), createdBy: user, updatedAt: getTimezoneDate(params), updatedBy: user })
+          injectAudit(data, true)
+          bulkOps.push({ insertOne: { document: { primaryKey: pk, data, status: 'active', deleted: false, createdAt: now, createdBy: user, updatedAt: now, updatedBy: user } } })
           inserted++
         }
       }
     }
 
-    // Update record count
-    const allRecs = await masterCol.find({}).toArray()
-    const count = allRecs.filter(r => r.deleted !== true).length
+    // Execute all writes in a single bulkWrite call
+    if (bulkOps.length > 0) {
+      await masterCol.bulkWrite(bulkOps, { ordered: false })
+    }
+
+    // Update record count using countDocuments
+    const count = await masterCol.countDocuments({ deleted: { $ne: true } })
 
     // Update metadata
     await metaCol.updateOne(
       { masterName: master },
-      { $set: { recordCount: count, updatedAt: getTimezoneDate(params), lastModifiedBy: user } }
+      { $set: { recordCount: count, lastModifiedBy: user }, $currentDate: { updatedAt: true } }
     )
 
     // Audit

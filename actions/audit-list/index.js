@@ -67,28 +67,40 @@ async function main (params) {
       const rawLogs = await cursor.skip((p - 1) * ps).limit(ps).toArray()
       logs = rawLogs.map(normalizLog)
     } else {
-      // Slow path: fetch all matching, then JS-filter for operation/actor substring search
-      // (aio-lib-db doesn't support $regex or $or compound filters)
-      let allLogs = await auditCol.find(filter).sort({ timestamp: -1 }).toArray()
+      // Use DB-level $regex for operation/actor substring search
+      const regexFilter = { ...filter }
 
       if (operation) {
-        const opLower = operation.toLowerCase()
-        allLogs = allLogs.filter(log =>
-          (log.operation || '').toLowerCase().includes(opLower) ||
-          (log.action || '').toLowerCase().includes(opLower)
-        )
+        regexFilter.$or = [
+          { operation: { $regex: operation, $options: 'i' } },
+          { action: { $regex: operation, $options: 'i' } }
+        ]
       }
 
       if (actor) {
-        const actorLower = actor.toLowerCase()
-        allLogs = allLogs.filter(log =>
-          (log.actor || '').toLowerCase().includes(actorLower) ||
-          (log.user || '').toLowerCase().includes(actorLower)
-        )
+        const actorConditions = [
+          { actor: { $regex: actor, $options: 'i' } },
+          { user: { $regex: actor, $options: 'i' } }
+        ]
+        if (regexFilter.$or) {
+          // Both operation and actor filters: combine with $and
+          regexFilter.$and = [
+            { $or: regexFilter.$or },
+            { $or: actorConditions }
+          ]
+          delete regexFilter.$or
+        } else {
+          regexFilter.$or = actorConditions
+        }
       }
 
-      total = allLogs.length
-      logs = allLogs.slice((p - 1) * ps, p * ps).map(normalizLog)
+      total = await auditCol.countDocuments(regexFilter)
+      const rawLogs = await auditCol.find(regexFilter)
+        .sort({ timestamp: -1 })
+        .skip((p - 1) * ps)
+        .limit(ps)
+        .toArray()
+      logs = rawLogs.map(normalizLog)
     }
 
     return createResponse({

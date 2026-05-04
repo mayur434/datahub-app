@@ -11,9 +11,23 @@
  */
 
 const { Core } = require('@adobe/aio-sdk')
-const { getDbClient, safeFindOne, escapeRegex, validateMasterName, checkRateLimit, COLLECTIONS, getMasterCollection, getEnvConfig, getCachedSettings, validatePartner, createAuditLog, validateRecord, computeFieldChanges, publishMutationEvent, checkStorageGuardrails, injectRecordAuditFields, getTimezoneDate } = require('../mdm-utils')
+const { getDbClient, safeFindOne, escapeRegex, validateMasterName, checkRateLimit, COLLECTIONS, getMasterCollection, getEnvConfig, getCachedSettings, validatePartner, createAuditLog, validateRecord, computeFieldChanges, publishMutationEvent, checkStorageGuardrails, getNextSequenceId } = require('../mdm-utils')
 
 // ============ Main Action ============
+
+/**
+ * System audit fields that are NEVER exposed via API Mesh responses.
+ * They are only visible in Admin UI (query-data, record-crud) and CSV exports.
+ */
+const SYSTEM_AUDIT_FIELDS = ['_createdAt', '_updatedAt', '_createdBy', '_updatedBy']
+
+/** Strip system audit fields from a data record for public API responses */
+function stripSystemFields (data) {
+  if (!data || typeof data !== 'object') return data
+  const clean = { ...data }
+  for (const f of SYSTEM_AUDIT_FIELDS) delete clean[f]
+  return clean
+}
 
 async function main (params) {
   const logger = Core.Logger('mdm-data', { level: params.LOG_LEVEL || 'info' })
@@ -97,10 +111,18 @@ async function main (params) {
 
     const masterCol = await getMasterCollection(client, entity)
 
-    // Bulk operations routed via 'operation' query param
+    // All mutations routed via 'operation' query param (everything is POST from API Mesh)
     const operation = params.operation
     if (operation) {
       switch (operation) {
+        case 'create':
+          return await handlePublicCreate(client, metaCol, masterCol, metadata, entity, params, partner)
+        case 'update':
+          return await handlePublicUpdate(client, masterCol, metadata, entity, params, partner)
+        case 'patch':
+          return await handlePublicPatch(client, masterCol, metadata, entity, params, partner)
+        case 'delete':
+          return await handlePublicDelete(client, metaCol, masterCol, metadata, entity, params, partner)
         case 'bulkCreate':
           return await handleBulkCreate(client, metaCol, masterCol, metadata, entity, params, partner)
         case 'bulkUpdate':
@@ -114,6 +136,7 @@ async function main (params) {
       }
     }
 
+    // Fallback: route by HTTP method (backwards compat for direct API calls)
     switch (method) {
       case 'post':
         return await handlePublicCreate(client, metaCol, masterCol, metadata, entity, params, partner)
@@ -137,7 +160,7 @@ async function main (params) {
 // ============ Read Handler ============
 
 async function handleRead (params, client, metadata, entity, settingsDoc, env, logger) {
-    const id = params.id || null
+    const id = params.id != null ? String(params.id) : null
 
     // --- Visibility check ---
     if (metadata.visibility === 'private') {
@@ -156,7 +179,7 @@ async function handleRead (params, client, metadata, entity, settingsDoc, env, l
 
       return createResponse({
         master: entity,
-        data: record.data
+        data: stripSystemFields(record.data)
       })
     }
 
@@ -164,12 +187,12 @@ async function handleRead (params, client, metadata, entity, settingsDoc, env, l
     if (params.ids) {
       const idList = params.ids.split(',').map(s => s.trim()).filter(Boolean)
       const masterCol = await getMasterCollection(client, entity)
-      const allRecs = await masterCol.find({}).toArray()
+      const matchedRecs = await masterCol.find({ primaryKey: { $in: idList }, deleted: { $ne: true } }).toArray()
+      const foundMap = new Map(matchedRecs.map(r => [r.primaryKey, stripSystemFields(r.data)]))
       const found = []
       const notFound = []
       for (const rid of idList) {
-        const rec = allRecs.find(r => r.primaryKey === rid && r.deleted !== true)
-        if (rec) found.push(rec.data)
+        if (foundMap.has(rid)) found.push(foundMap.get(rid))
         else notFound.push(rid)
       }
       return createResponse({
@@ -235,41 +258,25 @@ async function handleRead (params, client, metadata, entity, settingsDoc, env, l
 
     const sortDir = order === 'asc' ? 1 : -1
     const filterKeys = Object.keys(filters)
-    const needsJsFilter = filterKeys.length > 0
 
     let responseData, total
 
-    if (!needsJsFilter) {
-      // Fast path: DB-level pagination
-      const allRecs = await masterCol.find({}).toArray()
-      const active = allRecs.filter(r => r.deleted !== true && r.status !== 'deleted')
-      total = active.length
-      active.sort((a, b) => {
-        const va = a.data?.[sort] || ''
-        const vb = b.data?.[sort] || ''
-        return sortDir === 1 ? String(va).localeCompare(String(vb)) : String(vb).localeCompare(String(va))
-      })
-      const paged = active.slice((page - 1) * pageSize, page * pageSize)
-      responseData = paged.map(r => r.data)
-    } else {
-      // Slow path: filters require JS-level matching
-      const allRecords = await masterCol.find({}).toArray()
+    // Build DB-level query filter
+    const dbFilter = { deleted: { $ne: true }, status: { $ne: 'deleted' } }
 
-      let filtered = allRecords.filter(r => r.deleted !== true && r.status !== 'deleted')
-
-      // Apply data-level filters (case-insensitive match)
-      filtered = filtered.filter(r => {
-        if (!r.data) return false
-        return filterKeys.every(key => {
-          const pattern = new RegExp(`^${escapeRegex(filters[key])}$`, 'i')
-          return pattern.test(String(r.data[key] || ''))
-        })
-      })
-
-      total = filtered.length
-      const paged = filtered.slice((page - 1) * pageSize, page * pageSize)
-      responseData = paged.map(r => r.data)
+    // Apply data-level filters at DB level (case-insensitive regex match)
+    for (const key of filterKeys) {
+      dbFilter[`data.${key}`] = { $regex: `^${escapeRegex(filters[key])}$`, $options: 'i' }
     }
+
+    // DB-level count, sort, skip, limit
+    total = await masterCol.countDocuments(dbFilter)
+    const cursor = masterCol.find(dbFilter)
+      .sort({ [`data.${sort}`]: sortDir })
+      .skip((page - 1) * pageSize)
+      .limit(pageSize)
+    const paged = await cursor.toArray()
+    responseData = paged.map(r => stripSystemFields(r.data))
 
     // Apply field selection
     if (fields && fields.length > 0) {
@@ -296,44 +303,32 @@ async function handleRead (params, client, metadata, entity, settingsDoc, env, l
       facetsParam !== 'undefined'
 
     if (shouldReturnFacets && metadata.facets.fields && metadata.facets.fields.length > 0) {
-      // Facets still require full scan — but only when facets are requested
-      const allRecords = await masterCol.find({}).toArray()
-      const activeRecords = allRecords.filter(r => r.deleted !== true && r.status !== 'deleted')
       const aggregations = []
 
       for (const facetConfig of metadata.facets.fields) {
         const fieldName = facetConfig.field
         const maxValues = facetConfig.limit || metadata.facets.maxValuesPerFacet || 100
 
-        // Compute facet values from active records, excluding the current facet field filter
-        const facetRecords = activeRecords.filter(r => {
-          if (!r.data) return false
-          // Apply all data filters EXCEPT the current facet field
-          return filterKeys.every(key => {
-            if (key === fieldName) return true
-            const pattern = new RegExp(`^${escapeRegex(filters[key])}$`, 'i')
-            return pattern.test(String(r.data[key] || ''))
-          })
-        })
-
-        // Count distinct values
-        const valueCounts = {}
-        for (const r of facetRecords) {
-          const val = r.data[fieldName]
-          if (val != null && val !== '') {
-            const strVal = String(val)
-            valueCounts[strVal] = (valueCounts[strVal] || 0) + 1
-          }
+        // Build facet filter: all active filters EXCEPT the current facet field (OR-style faceting)
+        const facetFilter = { deleted: { $ne: true }, status: { $ne: 'deleted' } }
+        for (const key of filterKeys) {
+          if (key === fieldName) continue
+          facetFilter[`data.${key}`] = { $regex: `^${escapeRegex(filters[key])}$`, $options: 'i' }
         }
 
-        // Sort facet values
-        let sortedValues = Object.entries(valueCounts)
-        if (facetConfig.sortBy === 'count') {
-          sortedValues.sort((a, b) => facetConfig.sortOrder === 'asc' ? a[1] - b[1] : b[1] - a[1])
-        } else {
-          sortedValues.sort((a, b) => facetConfig.sortOrder === 'asc' ? a[0].localeCompare(b[0]) : b[0].localeCompare(a[0]))
-        }
-        sortedValues = sortedValues.slice(0, maxValues)
+        // Use aggregation pipeline for facet counting
+        const sortStage = facetConfig.sortBy === 'count'
+          ? { count: facetConfig.sortOrder === 'asc' ? 1 : -1 }
+          : { _id: facetConfig.sortOrder === 'asc' ? 1 : -1 }
+
+        const pipeline = masterCol.aggregate()
+          .match(facetFilter)
+          .match({ [`data.${fieldName}`]: { $exists: true, $ne: null, $ne: '' } })
+          .group({ _id: `$data.${fieldName}`, count: { $sum: 1 } })
+          .sort(sortStage)
+          .limit(maxValues)
+
+        const facetResults = await pipeline.toArray()
 
         aggregations.push({
           field: fieldName,
@@ -341,10 +336,10 @@ async function handleRead (params, client, metadata, entity, settingsDoc, env, l
           type: facetConfig.type || 'value',
           showCount: facetConfig.showCount !== false,
           collapsed: facetConfig.collapsed || false,
-          values: sortedValues.map(([value, count]) => ({
-            value,
-            count,
-            selected: filters[fieldName] ? String(filters[fieldName]).toLowerCase() === value.toLowerCase() : false
+          values: facetResults.map(r => ({
+            value: String(r._id),
+            count: r.count,
+            selected: filters[fieldName] ? String(filters[fieldName]).toLowerCase() === String(r._id).toLowerCase() : false
           }))
         })
       }
@@ -390,14 +385,17 @@ function parseRecordData (params) {
   return null
 }
 
-async function getNextAutoIncrementId (masterCol, pkField) {
-  const allRecs = await masterCol.find({}).toArray()
-  let maxId = 0
-  for (const r of allRecs) {
-    const val = parseInt(r.data?.[pkField])
-    if (!isNaN(val) && val > maxId) maxId = val
+function injectAudit (data, auditConfig, actor, isCreate, now) {
+  if (!auditConfig || !auditConfig.enabled) return
+  if (isCreate) {
+    if (auditConfig.createdAt) data._createdAt = now
+    if (auditConfig.updatedAt) data._updatedAt = now
+    if (auditConfig.createdBy) data._createdBy = actor
+    if (auditConfig.updatedBy) data._updatedBy = actor
+  } else {
+    if (auditConfig.updatedAt) data._updatedAt = now
+    if (auditConfig.updatedBy) data._updatedBy = actor
   }
-  return maxId + 1
 }
 
 async function handlePublicCreate (client, metaCol, masterCol, metadata, entity, params, partner) {
@@ -414,9 +412,17 @@ async function handlePublicCreate (client, metaCol, masterCol, metadata, entity,
     return createMutationResponse({ error: 'Primary key field is not configured' }, 400)
   }
 
-  // Auto-generate primary key if not provided (auto-increment)
-  if (!data[pkField]) {
-    data[pkField] = await getNextAutoIncrementId(masterCol, pkField)
+  // Auto-generate primary key if not provided (auto-increment with collision retry)
+  const autoGenPk = !data[pkField]
+  if (autoGenPk) {
+    data[pkField] = await getNextSequenceId(client, entity)
+    // If this PK already exists (counter out of sync), keep incrementing
+    let retries = 10
+    while (retries-- > 0) {
+      const collision = await safeFindOne(masterCol, { primaryKey: String(data[pkField]) })
+      if (!collision) break
+      data[pkField] = await getNextSequenceId(client, entity)
+    }
   }
 
   // Check allowed operations (stored as object: { create: true, update: true, ... })
@@ -427,7 +433,7 @@ async function handlePublicCreate (client, metaCol, masterCol, metadata, entity,
 
   // Validate against schema if present
   if (metadata.schema && metadata.schema.length > 0) {
-    const validationErrors = validateRecord(data, metadata.schema)
+    const validationErrors = validateRecord(data, metadata.schema, { primaryKey: metadata.primaryKey })
     if (validationErrors.length > 0) {
       return createMutationResponse({ error: `Validation failed: ${validationErrors.join(', ')}` }, 400)
     }
@@ -445,13 +451,11 @@ async function handlePublicCreate (client, metaCol, masterCol, metadata, entity,
     return createMutationResponse({ error: `Storage guardrail: ${guardrails.reason}` }, 507)
   }
 
-  const now = getTimezoneDate(params)
+  const now = new Date()
 
   // Inject record-level audit fields with partner name as actor
   const partnerActor = `partner:${partner.name}`
-  if (metadata.recordAudit) {
-    injectRecordAuditFields(data, metadata.recordAudit, partnerActor, null, true)
-  }
+  injectAudit(data, metadata.recordAudit, partnerActor, true, now)
 
   const record = {
     primaryKey: String(data[pkField]),
@@ -465,10 +469,8 @@ async function handlePublicCreate (client, metaCol, masterCol, metadata, entity,
 
   await masterCol.insertOne(record)
 
-  // Update record count + lastModifiedBy with partner name
-  const allRecs = await masterCol.find({}).toArray()
-  const activeCount = allRecs.filter(r => r.deleted !== true).length
-  await metaCol.updateOne({ masterName: entity }, { $set: { recordCount: activeCount, updatedAt: now, lastModifiedBy: partnerActor } })
+  // Atomically increment record count + update lastModifiedBy
+  await metaCol.updateOne({ masterName: entity }, { $set: { lastModifiedBy: partnerActor }, $currentDate: { updatedAt: true }, $inc: { recordCount: 1 } })
 
   // Audit log
   await createAuditLog(client, {
@@ -482,14 +484,14 @@ async function handlePublicCreate (client, metaCol, masterCol, metadata, entity,
     success: true,
     master: entity,
     operation: 'create',
-    record: data
+    record: stripSystemFields(data)
   }, 201)
 }
 
 async function handlePublicUpdate (client, masterCol, metadata, entity, params, partner) {
   const data = parseRecordData(params)
   const body = typeof params.__ow_body === 'string' ? (() => { try { return JSON.parse(params.__ow_body) } catch (e) { return {} } })() : (params.__ow_body || {})
-  const id = params.id || body.id
+  const id = (params.id || body.id) != null ? String(params.id || body.id) : null
   if (!id) return createMutationResponse({ error: 'Missing record ID (pass as "id" parameter or in body)' }, 400)
   if (!data || typeof data !== 'object') {
     return createMutationResponse({ error: 'Missing or invalid "data" in request body' }, 400)
@@ -512,30 +514,28 @@ async function handlePublicUpdate (client, masterCol, metadata, entity, params, 
 
   // Validate against schema
   if (metadata.schema && metadata.schema.length > 0) {
-    const validationErrors = validateRecord(data, metadata.schema)
+    const validationErrors = validateRecord(data, metadata.schema, { primaryKey: metadata.primaryKey })
     if (validationErrors.length > 0) {
       return createMutationResponse({ error: `Validation failed: ${validationErrors.join(', ')}` }, 400)
     }
   }
 
   const changes = computeFieldChanges(existing.data, data)
-  const now = getTimezoneDate(params)
+  const now = new Date()
   const partnerActor = `partner:${partner.name}`
 
   // Inject record-level audit fields with partner name
-  if (metadata.recordAudit) {
-    injectRecordAuditFields(data, metadata.recordAudit, partnerActor, null, false)
-  }
+  injectAudit(data, metadata.recordAudit, partnerActor, false, now)
 
   // Full replace of data
   await masterCol.updateOne(
     { primaryKey: id, deleted: false },
-    { $set: { data, updatedAt: now, source: 'api', partnerId: partner.partnerId } }
+    { $set: { data, source: 'api', partnerId: partner.partnerId }, $currentDate: { updatedAt: true } }
   )
 
   // Update lastModifiedBy on master metadata
   const metaCol = await client.collection(COLLECTIONS.METADATA)
-  await metaCol.updateOne({ masterName: entity }, { $set: { lastModifiedBy: partnerActor, updatedAt: now } })
+  await metaCol.updateOne({ masterName: entity }, { $set: { lastModifiedBy: partnerActor }, $currentDate: { updatedAt: true } })
 
   await createAuditLog(client, {
     action: 'api-update',
@@ -549,14 +549,14 @@ async function handlePublicUpdate (client, masterCol, metadata, entity, params, 
     success: true,
     master: entity,
     operation: 'update',
-    record: data
+    record: stripSystemFields(data)
   })
 }
 
 async function handlePublicPatch (client, masterCol, metadata, entity, params, partner) {
   const data = parseRecordData(params)
   const body = typeof params.__ow_body === 'string' ? (() => { try { return JSON.parse(params.__ow_body) } catch (e) { return {} } })() : (params.__ow_body || {})
-  const id = params.id || body.id
+  const id = (params.id || body.id) != null ? String(params.id || body.id) : null
   if (!id) return createMutationResponse({ error: 'Missing record ID (pass as "id" parameter or in body)' }, 400)
   if (!data || typeof data !== 'object') {
     return createMutationResponse({ error: 'Missing or invalid "data" in request body' }, 400)
@@ -577,34 +577,38 @@ async function handlePublicPatch (client, masterCol, metadata, entity, params, p
   const pkField = metadata.primaryKey
   if (pkField) delete data[pkField]
 
+  // Strip unknown fields from patch data before merge
+  if (metadata.schema && metadata.schema.length > 0) {
+    const schemaFieldNames = new Set(metadata.schema.map(f => f.name))
+    Object.keys(data).forEach(k => { if (!schemaFieldNames.has(k)) delete data[k] })
+  }
+
   // Merge: existing data + patch fields
   const merged = { ...existing.data, ...data }
 
   // Validate merged result against schema
   if (metadata.schema && metadata.schema.length > 0) {
-    const validationErrors = validateRecord(merged, metadata.schema)
+    const validationErrors = validateRecord(merged, metadata.schema, { primaryKey: metadata.primaryKey })
     if (validationErrors.length > 0) {
       return createMutationResponse({ error: `Validation failed: ${validationErrors.join(', ')}` }, 400)
     }
   }
 
   const changes = computeFieldChanges(existing.data, merged)
-  const now = getTimezoneDate(params)
+  const now = new Date()
   const partnerActor = `partner:${partner.name}`
 
   // Inject record-level audit fields with partner name
-  if (metadata.recordAudit) {
-    injectRecordAuditFields(merged, metadata.recordAudit, partnerActor, null, false)
-  }
+  injectAudit(merged, metadata.recordAudit, partnerActor, false, now)
 
   await masterCol.updateOne(
     { primaryKey: id, deleted: false },
-    { $set: { data: merged, updatedAt: now, source: 'api', partnerId: partner.partnerId } }
+    { $set: { data: merged, source: 'api', partnerId: partner.partnerId }, $currentDate: { updatedAt: true } }
   )
 
   // Update lastModifiedBy on master metadata
   const metaCol = await client.collection(COLLECTIONS.METADATA)
-  await metaCol.updateOne({ masterName: entity }, { $set: { lastModifiedBy: partnerActor, updatedAt: now } })
+  await metaCol.updateOne({ masterName: entity }, { $set: { lastModifiedBy: partnerActor }, $currentDate: { updatedAt: true } })
 
   await createAuditLog(client, {
     action: 'api-patch',
@@ -618,13 +622,13 @@ async function handlePublicPatch (client, masterCol, metadata, entity, params, p
     success: true,
     master: entity,
     operation: 'patch',
-    record: merged
+    record: stripSystemFields(merged)
   })
 }
 
 async function handlePublicDelete (client, metaCol, masterCol, metadata, entity, params, partner) {
   const body = typeof params.__ow_body === 'string' ? (() => { try { return JSON.parse(params.__ow_body) } catch (e) { return {} } })() : (params.__ow_body || {})
-  const id = params.id || body.id
+  const id = (params.id || body.id) != null ? String(params.id || body.id) : null
   if (!id) return createMutationResponse({ error: 'Missing record ID (pass as "id" parameter or in body)' }, 400)
 
   const allowedOps = metadata.allowedOperations || { create: true, update: true, delete: true }
@@ -635,18 +639,14 @@ async function handlePublicDelete (client, metaCol, masterCol, metadata, entity,
   const existing = await safeFindOne(masterCol, { primaryKey: id, deleted: false })
   if (!existing) return createMutationResponse({ error: `Record '${id}' not found` }, 404)
 
-  const now = getTimezoneDate(params)
-
   // Soft delete
   await masterCol.updateOne(
     { primaryKey: id, deleted: false },
-    { $set: { deleted: true, deletedAt: now, deletedBy: `partner:${partner.partnerId}`, source: 'api' } }
+    { $set: { deleted: true, deletedBy: `partner:${partner.partnerId}`, source: 'api' }, $currentDate: { updatedAt: true, deletedAt: true } }
   )
 
-  // Update record count + lastModifiedBy
-  const allRecs = await masterCol.find({}).toArray()
-  const activeCount = allRecs.filter(r => r.deleted !== true).length
-  await metaCol.updateOne({ masterName: entity }, { $set: { recordCount: activeCount, updatedAt: now, lastModifiedBy: `partner:${partner.name}` } })
+  // Atomically decrement record count + update lastModifiedBy
+  await metaCol.updateOne({ masterName: entity }, { $set: { lastModifiedBy: `partner:${partner.name}` }, $currentDate: { updatedAt: true }, $inc: { recordCount: -1 } })
 
   await createAuditLog(client, {
     action: 'api-delete',
@@ -715,12 +715,42 @@ async function handleBulkCreate (client, metaCol, masterCol, metadata, entity, p
     return createMutationResponse({ error: `Storage guardrail: ${guardrails.reason}` }, 507)
   }
 
-  const now = getTimezoneDate(params)
+  const now = new Date()
   const partnerActor = `partner:${partner.name}`
-  let nextAutoId = await getNextAutoIncrementId(masterCol, pkField)
-  const results = []
 
+  // Count records needing auto-generated IDs
+  const needAutoIdCount = records.filter(d => d && typeof d === 'object' && !d[pkField]).length
+  let lastAutoId = 0
+  if (needAutoIdCount > 0) {
+    lastAutoId = await getNextSequenceId(client, entity, needAutoIdCount)
+  }
+  let autoIdStart = lastAutoId - needAutoIdCount + 1
+
+  const results = []
+  const bulkOps = []
+
+  // Pre-compute PKs and batch-fetch existing records with $in
+  const pksToCheck = []
+  const recordPks = []
   for (const data of records) {
+    if (!data || typeof data !== 'object') { recordPks.push(null); continue }
+    let pk = data[pkField]
+    if (!pk) {
+      pk = autoIdStart++
+      recordPks.push(String(pk))
+    } else {
+      pk = String(pk)
+      recordPks.push(pk)
+    }
+    pksToCheck.push(pk)
+  }
+  const existingRecords = pksToCheck.length > 0
+    ? await masterCol.find({ primaryKey: { $in: pksToCheck }, deleted: false }).toArray()
+    : []
+  const existingSet = new Set(existingRecords.map(r => r.primaryKey))
+
+  for (let i = 0; i < records.length; i++) {
+    const data = records[i]
     try {
       if (!data || typeof data !== 'object') {
         results.push({ success: false, id: null, error: 'Invalid record data' })
@@ -733,34 +763,32 @@ async function handleBulkCreate (client, metaCol, masterCol, metadata, entity, p
         continue
       }
 
-      // Auto-generate primary key if not provided (auto-increment)
-      if (!data[pkField]) {
-        data[pkField] = nextAutoId++
-      }
-      const pk = String(data[pkField])
+      const pk = recordPks[i]
+      if (!data[pkField]) data[pkField] = pk
 
       if (metadata.schema && metadata.schema.length > 0) {
-        const errors = validateRecord(data, metadata.schema)
+        const errors = validateRecord(data, metadata.schema, { primaryKey: metadata.primaryKey })
         if (errors.length > 0) {
           results.push({ success: false, id: pk, error: `Validation: ${errors.join(', ')}` })
           continue
         }
       }
 
-      const existing = await safeFindOne(masterCol, { primaryKey: pk, deleted: false })
-      if (existing) {
+      if (existingSet.has(pk)) {
         results.push({ success: false, id: pk, error: 'Already exists' })
         continue
       }
 
-      if (metadata.recordAudit) {
-        injectRecordAuditFields(data, metadata.recordAudit, partnerActor, null, true)
-      }
+      injectAudit(data, metadata.recordAudit, partnerActor, true, now)
 
-      await masterCol.insertOne({
-        primaryKey: pk, data, deleted: false,
-        createdAt: now, updatedAt: now,
-        source: 'api', partnerId: partner.partnerId
+      bulkOps.push({
+        insertOne: {
+          document: {
+            primaryKey: pk, data, deleted: false,
+            createdAt: now, updatedAt: now,
+            source: 'api', partnerId: partner.partnerId
+          }
+        }
       })
       results.push({ success: true, id: pk })
     } catch (e) {
@@ -768,11 +796,16 @@ async function handleBulkCreate (client, metaCol, masterCol, metadata, entity, p
     }
   }
 
-  const allRecs = await masterCol.find({}).toArray()
-  const activeCount = allRecs.filter(r => !r.deleted).length
-  await metaCol.updateOne({ masterName: entity }, { $set: { recordCount: activeCount, updatedAt: now, lastModifiedBy: partnerActor } })
+  // Execute all inserts in a single bulkWrite call
+  if (bulkOps.length > 0) {
+    await masterCol.bulkWrite(bulkOps, { ordered: false })
+  }
 
   const succeeded = results.filter(r => r.success).length
+  if (succeeded > 0) {
+    await metaCol.updateOne({ masterName: entity }, { $set: { lastModifiedBy: partnerActor }, $currentDate: { updatedAt: true }, $inc: { recordCount: succeeded } })
+  }
+
   await createAuditLog(client, {
     action: 'api-bulk-create',
     masterName: entity,
@@ -798,9 +831,17 @@ async function handleBulkUpdate (client, masterCol, metadata, entity, params, pa
     return createMutationResponse({ error: 'Update operation is not allowed for this master' }, 403)
   }
 
-  const now = getTimezoneDate(params)
+  const now = new Date()
   const partnerActor = `partner:${partner.name}`
   const results = []
+  const bulkOps = []
+
+  // Batch-fetch all existing records with $in
+  const idsToFetch = items.map(item => item.id).filter(Boolean)
+  const existingRecords = idsToFetch.length > 0
+    ? await masterCol.find({ primaryKey: { $in: idsToFetch }, deleted: false }).toArray()
+    : []
+  const existingMap = new Map(existingRecords.map(r => [r.primaryKey, r]))
 
   for (const item of items) {
     try {
@@ -810,7 +851,7 @@ async function handleBulkUpdate (client, masterCol, metadata, entity, params, pa
       if (!data || typeof data !== 'object') { results.push({ success: false, id, error: 'Missing or invalid "data"' }); continue }
       ;['createdAt', 'updatedAt', 'createdBy', 'updatedBy'].forEach(f => delete data[f])
 
-      const existing = await safeFindOne(masterCol, { primaryKey: id, deleted: false })
+      const existing = existingMap.get(id)
       if (!existing) { results.push({ success: false, id, error: 'Not found' }); continue }
 
       // Primary key is immutable — preserve existing value
@@ -818,29 +859,34 @@ async function handleBulkUpdate (client, masterCol, metadata, entity, params, pa
       if (pkField) data[pkField] = existing.data[pkField]
 
       if (metadata.schema && metadata.schema.length > 0) {
-        const errors = validateRecord(data, metadata.schema)
+        const errors = validateRecord(data, metadata.schema, { primaryKey: metadata.primaryKey })
         if (errors.length > 0) {
           results.push({ success: false, id, error: `Validation: ${errors.join(', ')}` })
           continue
         }
       }
 
-      if (metadata.recordAudit) {
-        injectRecordAuditFields(data, metadata.recordAudit, partnerActor, null, false)
-      }
+      injectAudit(data, metadata.recordAudit, partnerActor, false, now)
 
-      await masterCol.updateOne(
-        { primaryKey: id, deleted: false },
-        { $set: { data, updatedAt: now, source: 'api', partnerId: partner.partnerId } }
-      )
+      bulkOps.push({
+        updateOne: {
+          filter: { primaryKey: id, deleted: false },
+          update: { $set: { data, source: 'api', partnerId: partner.partnerId }, $currentDate: { updatedAt: true } }
+        }
+      })
       results.push({ success: true, id })
     } catch (e) {
       results.push({ success: false, id: item?.id || null, error: e.message })
     }
   }
 
+  // Execute all updates in a single bulkWrite call
+  if (bulkOps.length > 0) {
+    await masterCol.bulkWrite(bulkOps, { ordered: false })
+  }
+
   const metaCol = await client.collection(COLLECTIONS.METADATA)
-  await metaCol.updateOne({ masterName: entity }, { $set: { lastModifiedBy: partnerActor, updatedAt: now } })
+  await metaCol.updateOne({ masterName: entity }, { $set: { lastModifiedBy: partnerActor }, $currentDate: { updatedAt: true } })
 
   const succeeded = results.filter(r => r.success).length
   await createAuditLog(client, {
@@ -868,9 +914,17 @@ async function handleBulkPatch (client, masterCol, metadata, entity, params, par
     return createMutationResponse({ error: 'Patch/update operation is not allowed for this master' }, 403)
   }
 
-  const now = getTimezoneDate(params)
+  const now = new Date()
   const partnerActor = `partner:${partner.name}`
   const results = []
+  const bulkOps = []
+
+  // Batch-fetch all existing records with $in
+  const idsToFetch = items.map(item => item.id).filter(Boolean)
+  const existingRecords = idsToFetch.length > 0
+    ? await masterCol.find({ primaryKey: { $in: idsToFetch }, deleted: false }).toArray()
+    : []
+  const existingMap = new Map(existingRecords.map(r => [r.primaryKey, r]))
 
   for (const item of items) {
     try {
@@ -884,35 +938,46 @@ async function handleBulkPatch (client, masterCol, metadata, entity, params, par
       const pkField = metadata.primaryKey
       if (pkField) delete data[pkField]
 
-      const existing = await safeFindOne(masterCol, { primaryKey: id, deleted: false })
+      const existing = existingMap.get(id)
       if (!existing) { results.push({ success: false, id, error: 'Not found' }); continue }
+
+      // Strip unknown fields from patch data before merge
+      if (metadata.schema && metadata.schema.length > 0) {
+        const schemaFieldNames = new Set(metadata.schema.map(f => f.name))
+        Object.keys(data).forEach(k => { if (!schemaFieldNames.has(k)) delete data[k] })
+      }
 
       const merged = { ...existing.data, ...data }
 
       if (metadata.schema && metadata.schema.length > 0) {
-        const errors = validateRecord(merged, metadata.schema)
+        const errors = validateRecord(merged, metadata.schema, { primaryKey: metadata.primaryKey })
         if (errors.length > 0) {
           results.push({ success: false, id, error: `Validation: ${errors.join(', ')}` })
           continue
         }
       }
 
-      if (metadata.recordAudit) {
-        injectRecordAuditFields(merged, metadata.recordAudit, partnerActor, null, false)
-      }
+      injectAudit(merged, metadata.recordAudit, partnerActor, false, now)
 
-      await masterCol.updateOne(
-        { primaryKey: id, deleted: false },
-        { $set: { data: merged, updatedAt: now, source: 'api', partnerId: partner.partnerId } }
-      )
+      bulkOps.push({
+        updateOne: {
+          filter: { primaryKey: id, deleted: false },
+          update: { $set: { data: merged, source: 'api', partnerId: partner.partnerId }, $currentDate: { updatedAt: true } }
+        }
+      })
       results.push({ success: true, id })
     } catch (e) {
       results.push({ success: false, id: item?.id || null, error: e.message })
     }
   }
 
+  // Execute all patches in a single bulkWrite call
+  if (bulkOps.length > 0) {
+    await masterCol.bulkWrite(bulkOps, { ordered: false })
+  }
+
   const metaCol = await client.collection(COLLECTIONS.METADATA)
-  await metaCol.updateOne({ masterName: entity }, { $set: { lastModifiedBy: partnerActor, updatedAt: now } })
+  await metaCol.updateOne({ masterName: entity }, { $set: { lastModifiedBy: partnerActor }, $currentDate: { updatedAt: true } })
 
   const succeeded = results.filter(r => r.success).length
   await createAuditLog(client, {
@@ -940,9 +1005,17 @@ async function handleBulkDelete (client, metaCol, masterCol, metadata, entity, p
     return createMutationResponse({ error: 'Delete operation is not allowed for this master' }, 403)
   }
 
-  const now = getTimezoneDate(params)
+  const now = new Date()
   const partnerActor = `partner:${partner.name}`
   const results = []
+  const bulkOps = []
+
+  // Batch-fetch all existing records with $in
+  const validIds = ids.filter(id => id && typeof id === 'string')
+  const existingRecords = validIds.length > 0
+    ? await masterCol.find({ primaryKey: { $in: validIds }, deleted: false }).toArray()
+    : []
+  const existingSet = new Set(existingRecords.map(r => r.primaryKey))
 
   for (const id of ids) {
     try {
@@ -951,24 +1024,30 @@ async function handleBulkDelete (client, metaCol, masterCol, metadata, entity, p
         continue
       }
 
-      const existing = await safeFindOne(masterCol, { primaryKey: id, deleted: false })
-      if (!existing) { results.push({ success: false, id, error: 'Not found' }); continue }
+      if (!existingSet.has(id)) { results.push({ success: false, id, error: 'Not found' }); continue }
 
-      await masterCol.updateOne(
-        { primaryKey: id, deleted: false },
-        { $set: { deleted: true, deletedAt: now, deletedBy: `partner:${partner.partnerId}`, source: 'api' } }
-      )
+      bulkOps.push({
+        updateOne: {
+          filter: { primaryKey: id, deleted: false },
+          update: { $set: { deleted: true, deletedBy: `partner:${partner.partnerId}`, source: 'api' }, $currentDate: { updatedAt: true, deletedAt: true } }
+        }
+      })
       results.push({ success: true, id })
     } catch (e) {
       results.push({ success: false, id: String(id || ''), error: e.message })
     }
   }
 
-  const allRecs = await masterCol.find({}).toArray()
-  const activeCount = allRecs.filter(r => !r.deleted).length
-  await metaCol.updateOne({ masterName: entity }, { $set: { recordCount: activeCount, updatedAt: now, lastModifiedBy: partnerActor } })
+  // Execute all deletes in a single bulkWrite call
+  if (bulkOps.length > 0) {
+    await masterCol.bulkWrite(bulkOps, { ordered: false })
+  }
 
   const succeeded = results.filter(r => r.success).length
+  if (succeeded > 0) {
+    await metaCol.updateOne({ masterName: entity }, { $set: { lastModifiedBy: partnerActor }, $currentDate: { updatedAt: true }, $inc: { recordCount: -succeeded } })
+  }
+
   await createAuditLog(client, {
     action: 'api-bulk-delete',
     masterName: entity,
@@ -987,21 +1066,21 @@ async function handleBulkDelete (client, metaCol, masterCol, metadata, entity, p
 
 function createResponse (body, statusCode = 200) {
   return {
-    statusCode,
+    statusCode: 200,
     headers: {
       'Content-Type': 'application/json',
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Headers': 'Authorization, Content-Type, x-forwarded-authorization, x-partner-id, x-partner-key',
       'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
-      'Cache-Control': 'public, max-age=60, s-maxage=900'
+      'Cache-Control': statusCode >= 400 ? 'no-store' : 'public, max-age=60, s-maxage=900'
     },
-    body
+    body: statusCode === 200 ? body : { ...body, statusCode }
   }
 }
 
 function createMutationResponse (body, statusCode = 200) {
   return {
-    statusCode,
+    statusCode: 200,
     headers: {
       'Content-Type': 'application/json',
       'Access-Control-Allow-Origin': '*',
@@ -1009,7 +1088,7 @@ function createMutationResponse (body, statusCode = 200) {
       'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
       'Cache-Control': 'no-store'
     },
-    body
+    body: statusCode === 200 ? body : { ...body, statusCode }
   }
 }
 

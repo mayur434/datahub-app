@@ -4,6 +4,7 @@ import ErrorBoundary from 'react-error-boundary'
 import { HashRouter as Router, Routes, Route, useNavigate, Navigate } from 'react-router-dom'
 import { NotificationProvider } from './NotificationProvider'
 import { AppProvider, useApp } from './AppContext'
+import { ThemeProvider, useTheme } from './ThemeProvider'
 import SideBar from './SideBar'
 import HeaderBar from './HeaderBar'
 
@@ -32,11 +33,11 @@ function RouteLoading () {
 
 function App (props) {
   const [sidebarOpen, setSidebarOpen] = useState(false)
-  const [isMobile, setIsMobile] = useState(window.innerWidth < 768)
+  const [isMobile, setIsMobile] = useState(window.innerWidth < 1024)
 
   useEffect(() => {
     const onResize = () => {
-      const mobile = window.innerWidth < 768
+      const mobile = window.innerWidth < 1024
       setIsMobile(mobile)
       if (!mobile) setSidebarOpen(false)
     }
@@ -47,25 +48,45 @@ function App (props) {
   const toggleSidebar = useCallback(() => setSidebarOpen(prev => !prev), [])
   const closeSidebar = useCallback(() => setSidebarOpen(false), [])
 
-  props.runtime.on('configuration', ({ imsOrg, imsToken, locale }) => {
-    // configuration change handler
-  })
-  props.runtime.on('history', ({ type, path }) => {
-    // history change handler
-  })
+  useEffect(() => {
+    const onConfig = ({ imsOrg, imsToken, locale }) => {
+      // configuration change handler
+    }
+    const onHistory = ({ type, path }) => {
+      // history change handler
+    }
+    props.runtime.on('configuration', onConfig)
+    props.runtime.on('history', onHistory)
+    return () => {
+      props.runtime.off('configuration', onConfig)
+      props.runtime.off('history', onHistory)
+    }
+  }, [props.runtime])
 
   return (
     <ErrorBoundary onError={onError} FallbackComponent={fallbackComponent}>
       <Router>
-        <Provider theme={defaultTheme} colorScheme='light'>
-          <AppProvider runtime={props.runtime} ims={props.ims}>
-            <NotificationProvider>
-              <AppShell runtime={props.runtime} ims={props.ims} isMobile={isMobile} sidebarOpen={sidebarOpen} closeSidebar={closeSidebar} toggleSidebar={toggleSidebar} />
-            </NotificationProvider>
-          </AppProvider>
-        </Provider>
+        <ThemeProvider>
+          <ThemedApp runtime={props.runtime} ims={props.ims} isMobile={isMobile} sidebarOpen={sidebarOpen} closeSidebar={closeSidebar} toggleSidebar={toggleSidebar} />
+        </ThemeProvider>
       </Router>
     </ErrorBoundary>
+  )
+}
+
+/**
+ * Wraps the Spectrum Provider with the active theme's colorScheme.
+ */
+function ThemedApp ({ runtime, ims, isMobile, sidebarOpen, closeSidebar, toggleSidebar }) {
+  const { theme } = useTheme()
+  return (
+    <Provider theme={defaultTheme} colorScheme={theme}>
+      <AppProvider runtime={runtime} ims={ims}>
+        <NotificationProvider>
+          <AppShell runtime={runtime} ims={ims} isMobile={isMobile} sidebarOpen={sidebarOpen} closeSidebar={closeSidebar} toggleSidebar={toggleSidebar} />
+        </NotificationProvider>
+      </AppProvider>
+    </Provider>
   )
 }
 

@@ -89,7 +89,8 @@ export async function fetchFileDetail (master, ims) {
 }
 
 export async function uploadFile (params, ims) {
-  return invokeAction('file-upload', params, ims, 'POST')
+  const compressed = await compressCsvContent(params)
+  return invokeAction('file-upload', compressed, ims, 'POST')
 }
 
 export async function deleteFile (master, ims) {
@@ -127,11 +128,36 @@ export async function deleteRecord (master, id, ims) {
  * Bulk operations
  */
 export async function fullUpdate (master, csvContent, ims) {
-  return invokeAction('full-update', { master: master, csvContent }, ims, 'POST')
+  const params = await compressCsvContent({ master, csvContent })
+  return invokeAction('full-update', params, ims, 'POST')
 }
 
 export async function deltaUpdate (master, csvContent, mode, ims) {
-  return invokeAction('delta-update', { master: master, csvContent, mode }, ims, 'POST')
+  const params = await compressCsvContent({ master, csvContent, mode })
+  return invokeAction('delta-update', params, ims, 'POST')
+}
+
+/**
+ * Compress csvContent field with gzip to stay under the 1 MB Runtime gateway limit.
+ * Uses native CompressionStream API (no external dependency).
+ * The server-side decompressCsvContent() reverses this.
+ */
+async function compressCsvContent (params) {
+  if (!params.csvContent) return params
+  const encoder = new TextEncoder()
+  const stream = new Blob([encoder.encode(params.csvContent)])
+    .stream()
+    .pipeThrough(new CompressionStream('gzip'))
+  const compressedBlob = await new Response(stream).blob()
+  const buffer = await compressedBlob.arrayBuffer()
+  const bytes = new Uint8Array(buffer)
+  let binary = ''
+  const chunk = 8192
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk))
+  }
+  const base64 = btoa(binary)
+  return { ...params, csvContent: base64, csvCompressed: true }
 }
 
 export async function bulkUpdate (master, records, operationType, dryRun, ims) {

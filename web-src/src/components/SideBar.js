@@ -62,7 +62,7 @@ function SideBar ({ onNavigate }) {
           <div className='mdm-sidebar__section'>
             <span className='mdm-sidebar__section-label'>Tools</span>
             <ul className='SideNav'>
-              <SideNavItem to='/api-console' icon={<Code size='S' />} label='Query Console' onNavigate={onNavigate} />
+              <SideNavItem to='/api-console' icon={<Code size='S' />} label='API Client' onNavigate={onNavigate} />
             </ul>
           </div>
         )}

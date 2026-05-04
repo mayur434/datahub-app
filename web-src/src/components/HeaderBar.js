@@ -5,12 +5,16 @@ import Bell from '@spectrum-icons/workflow/Bell'
 import Settings from '@spectrum-icons/workflow/Settings'
 import User from '@spectrum-icons/workflow/User'
 import Help from '@spectrum-icons/workflow/Help'
+import Light from '@spectrum-icons/workflow/Light'
+import Moon from '@spectrum-icons/workflow/Moon'
 
 import ShowMenu from '@spectrum-icons/workflow/ShowMenu'
+import { useTheme } from './ThemeProvider'
 
 function HeaderBar ({ ims, onToggleSidebar, isMobile }) {
   const location = useLocation()
   const navigate = useNavigate()
+  const { theme, toggleTheme } = useTheme()
 
   function getBreadcrumbs () {
     const path = location.pathname
@@ -90,6 +94,16 @@ function HeaderBar ({ ims, onToggleSidebar, isMobile }) {
               <Settings />
             </ActionButton>
             <Tooltip>Settings</Tooltip>
+          </TooltipTrigger>
+          <TooltipTrigger>
+            <button
+              className='mdm-theme-toggle'
+              onClick={toggleTheme}
+              aria-label={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+            >
+              {theme === 'dark' ? <Light size='S' /> : <Moon size='S' />}
+            </button>
+            <Tooltip>{theme === 'dark' ? 'Light mode' : 'Dark mode'}</Tooltip>
           </TooltipTrigger>
           <View
             UNSAFE_className='mdm-header__user-badge'

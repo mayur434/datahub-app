@@ -4,7 +4,7 @@
  * Operates on per-master collections (mdm_<masterName>).
  */
 
-const { getDbClient, safeFindOne, COLLECTIONS, getMasterCollection, createAuditLog, createResponse, createErrorResponse, validateIMSToken, getUserFromParams, validateMasterName, checkPermission, validateRecord, computeFieldChanges, publishMutationEvent, checkStorageGuardrails, injectRecordAuditFields, getTimezoneDate, enforceAppPermission } = require('../mdm-utils')
+const { getDbClient, safeFindOne, COLLECTIONS, getMasterCollection, createAuditLog, createResponse, createErrorResponse, validateIMSToken, getUserFromParams, validateMasterName, checkPermission, validateRecord, computeFieldChanges, publishMutationEvent, checkStorageGuardrails, enforceAppPermission, getNextSequenceId } = require('../mdm-utils')
 
 async function main (params) {
   if (params.__ow_method === 'options') return createResponse({})
@@ -15,7 +15,8 @@ async function main (params) {
   let client
   try {
     const master = params.master || params.entity
-    const { id, operation } = params
+    const { operation } = params
+    const id = params.id != null ? String(params.id) : undefined
     // data may arrive as a JSON string (from API Mesh GraphQL) or as an object (from direct invocation)
     let data = params.data
     if (typeof data === 'string') {
@@ -84,30 +85,41 @@ async function handleCreate (client, metaCol, masterCol, metadata, master, data,
     return createErrorResponse('Missing or invalid data payload')
   }
 
-  const pk = data[metadata.primaryKey]
+  // Auto-generate primary key if not provided (auto-increment with collision retry)
+  let pk = data[metadata.primaryKey]
   if (!pk) {
-    return createErrorResponse(`Primary key '${metadata.primaryKey}' is required`)
+    pk = await getNextSequenceId(client, master)
+    data[metadata.primaryKey] = pk
+    // If this PK already exists (counter out of sync), keep incrementing
+    let retries = 10
+    while (retries-- > 0) {
+      const collision = await safeFindOne(masterCol, { primaryKey: String(pk) })
+      if (!collision) break
+      pk = await getNextSequenceId(client, master)
+      data[metadata.primaryKey] = pk
+    }
   }
+  pk = String(pk)
 
-  // Check for existing
+  // Check for existing (explicit PK provided by user)
   const existing = await safeFindOne(masterCol, { primaryKey: pk, deleted: false })
   if (existing) {
     return createErrorResponse(`Record with ${metadata.primaryKey}='${pk}' already exists`, 409)
   }
 
-  // Validate required fields
-  const requiredFields = metadata.schema.filter(s => s.required).map(s => s.name)
+  // Validate required fields (skip the PK since it's auto-generated)
+  const requiredFields = metadata.schema.filter(s => s.required && s.name !== metadata.primaryKey).map(s => s.name)
   const missing = requiredFields.filter(f => !data[f] && data[f] !== 0)
   if (missing.length > 0) {
     return createErrorResponse(`Missing required fields: ${missing.join(', ')}`)
   }
 
   // Strip system fields — these are auto-managed server-side
-  const SYSTEM_AUDIT_FIELDS = ['createdAt', 'updatedAt', 'createdBy', 'updatedBy']
+  const SYSTEM_AUDIT_FIELDS = ['_createdAt', '_updatedAt', '_createdBy', '_updatedBy', 'createdAt', 'updatedAt', 'createdBy', 'updatedBy']
   SYSTEM_AUDIT_FIELDS.forEach(f => delete data[f])
 
   // Validate data against schema rules
-  const validationErrors = validateRecord(data, metadata.schema)
+  const validationErrors = validateRecord(data, metadata.schema, { primaryKey: metadata.primaryKey })
   if (validationErrors.length > 0) {
     return createErrorResponse(`Validation failed: ${validationErrors.join('; ')}`)
   }
@@ -123,9 +135,15 @@ async function handleCreate (client, metaCol, masterCol, metadata, master, data,
     return createErrorResponse(`Storage guardrail: ${guardrail.reason}`, 507)
   }
 
+  const now = new Date()
+
   // Inject record-level audit fields if configured for this master
-  if (metadata.recordAudit) {
-    injectRecordAuditFields(data, metadata.recordAudit, user, params, true)
+  const auditConfig = metadata.recordAudit
+  if (auditConfig && auditConfig.enabled) {
+    if (auditConfig.createdAt) data._createdAt = now
+    if (auditConfig.updatedAt) data._updatedAt = now
+    if (auditConfig.createdBy) data._createdBy = user
+    if (auditConfig.updatedBy) data._updatedBy = user
   }
 
   await masterCol.insertOne({
@@ -133,22 +151,21 @@ async function handleCreate (client, metaCol, masterCol, metadata, master, data,
     data,
     status: 'active',
     deleted: false,
-    createdAt: getTimezoneDate(params),
+    createdAt: now,
     createdBy: user,
-    updatedAt: getTimezoneDate(params),
+    updatedAt: now,
     updatedBy: user
   })
 
-  // Update record count + lastModifiedBy
-  const allRecs = await masterCol.find({}).toArray()
-  const count = allRecs.filter(r => r.deleted === false).length
-  await metaCol.updateOne(
-    { masterName: master },
-    { $set: { recordCount: count, updatedAt: getTimezoneDate(params), lastModifiedBy: user } }
-  )
-
-  await createAuditLog(client, { masterName: master, operation: 'create-record', actor: user, status: 'success', affectedRecords: 1 })
-  await publishMutationEvent(client, 'record.created', { master, recordId: pk, data, actor: user })
+  // Run post-write operations in parallel
+  await Promise.all([
+    metaCol.updateOne(
+      { masterName: master },
+      { $set: { lastModifiedBy: user }, $currentDate: { updatedAt: true }, $inc: { recordCount: 1 } }
+    ),
+    createAuditLog(client, { masterName: master, operation: 'create-record', actor: user, status: 'success', affectedRecords: 1 }),
+    publishMutationEvent(client, 'record.created', { master, recordId: pk, data, actor: user })
+  ])
 
   return createResponse({ status: 'success', record: data }, 201)
 }
@@ -167,26 +184,38 @@ async function handleUpdate (client, masterCol, metadata, master, id, data, user
   data[metadata.primaryKey] = id
 
   // Strip system fields — these are auto-managed server-side
-  const SYSTEM_AUDIT_FIELDS = ['createdAt', 'updatedAt', 'createdBy', 'updatedBy']
+  const SYSTEM_AUDIT_FIELDS = ['_createdAt', '_updatedAt', '_createdBy', '_updatedBy', 'createdAt', 'updatedAt', 'createdBy', 'updatedBy']
   SYSTEM_AUDIT_FIELDS.forEach(f => delete data[f])
 
+  // Validate data against schema (also strips unknown fields)
+  if (metadata.schema && metadata.schema.length > 0) {
+    const validationErrors = validateRecord(data, metadata.schema, { primaryKey: metadata.primaryKey })
+    if (validationErrors.length > 0) {
+      return createErrorResponse(`Validation failed: ${validationErrors.join('; ')}`)
+    }
+  }
+
   // Inject record-level audit fields if configured
-  if (metadata.recordAudit) {
-    injectRecordAuditFields(data, metadata.recordAudit, user, null, false)
+  const auditConfig = metadata.recordAudit
+  if (auditConfig && auditConfig.enabled) {
+    if (auditConfig.updatedAt) data._updatedAt = new Date()
+    if (auditConfig.updatedBy) data._updatedBy = user
   }
 
   await masterCol.updateOne(
     { primaryKey: id },
-    { $set: { data, updatedAt: getTimezoneDate(params), updatedBy: user } }
+    { $set: { data, updatedBy: user }, $currentDate: { updatedAt: true } }
   )
 
   const changes = computeFieldChanges(existing.data, data)
-  await createAuditLog(client, { masterName: master, operation: 'update-record', actor: user, status: 'success', affectedRecords: 1, recordId: id, changes })
-  await publishMutationEvent(client, 'record.updated', { master, recordId: id, changes, actor: user })
 
-  // Update lastModifiedBy on master metadata
+  // Run post-write operations in parallel
   const metaCol = await client.collection(COLLECTIONS.METADATA)
-  await metaCol.updateOne({ masterName: master }, { $set: { lastModifiedBy: user, updatedAt: getTimezoneDate(params) } })
+  await Promise.all([
+    createAuditLog(client, { masterName: master, operation: 'update-record', actor: user, status: 'success', affectedRecords: 1, recordId: id, changes }),
+    publishMutationEvent(client, 'record.updated', { master, recordId: id, changes, actor: user }),
+    metaCol.updateOne({ masterName: master }, { $set: { lastModifiedBy: user }, $currentDate: { updatedAt: true } })
+  ])
 
   return createResponse({ status: 'success', record: data })
 }
@@ -209,29 +238,47 @@ async function handlePatch (client, masterCol, metadata, master, id, data, user,
   }
 
   // Strip system fields — these are auto-managed server-side
-  const SYSTEM_AUDIT_FIELDS = ['createdAt', 'updatedAt', 'createdBy', 'updatedBy']
+  const SYSTEM_AUDIT_FIELDS = ['_createdAt', '_updatedAt', '_createdBy', '_updatedBy', 'createdAt', 'updatedAt', 'createdBy', 'updatedBy']
   SYSTEM_AUDIT_FIELDS.forEach(f => delete data[f])
+
+  // Strip unknown fields from patch data before merge
+  if (metadata.schema && metadata.schema.length > 0) {
+    const schemaFieldNames = new Set(metadata.schema.map(f => f.name))
+    Object.keys(data).forEach(k => { if (!schemaFieldNames.has(k)) delete data[k] })
+  }
 
   // Merge data
   const merged = { ...existing.data, ...data }
 
+  // Validate merged data against schema (also strips unknown fields)
+  if (metadata.schema && metadata.schema.length > 0) {
+    const validationErrors = validateRecord(merged, metadata.schema, { primaryKey: metadata.primaryKey })
+    if (validationErrors.length > 0) {
+      return createErrorResponse(`Validation failed: ${validationErrors.join('; ')}`)
+    }
+  }
+
   // Inject record-level audit fields if configured
-  if (metadata.recordAudit) {
-    injectRecordAuditFields(merged, metadata.recordAudit, user, null, false)
+  const auditConfig = metadata.recordAudit
+  if (auditConfig && auditConfig.enabled) {
+    if (auditConfig.updatedAt) merged._updatedAt = new Date()
+    if (auditConfig.updatedBy) merged._updatedBy = user
   }
 
   await masterCol.updateOne(
     { primaryKey: id },
-    { $set: { data: merged, updatedAt: getTimezoneDate(params), updatedBy: user } }
+    { $set: { data: merged, updatedBy: user }, $currentDate: { updatedAt: true } }
   )
 
   const changes = computeFieldChanges(existing.data, merged)
-  await createAuditLog(client, { masterName: master, operation: 'patch-record', actor: user, status: 'success', affectedRecords: 1, recordId: id, changes })
-  await publishMutationEvent(client, 'record.patched', { master, recordId: id, changes, actor: user })
 
-  // Update lastModifiedBy on master metadata
+  // Run post-write operations in parallel
   const metaCol = await client.collection(COLLECTIONS.METADATA)
-  await metaCol.updateOne({ masterName: master }, { $set: { lastModifiedBy: user, updatedAt: getTimezoneDate(params) } })
+  await Promise.all([
+    createAuditLog(client, { masterName: master, operation: 'patch-record', actor: user, status: 'success', affectedRecords: 1, recordId: id, changes }),
+    publishMutationEvent(client, 'record.patched', { master, recordId: id, changes, actor: user }),
+    metaCol.updateOne({ masterName: master }, { $set: { lastModifiedBy: user }, $currentDate: { updatedAt: true } })
+  ])
 
   return createResponse({ status: 'success', record: merged })
 }
@@ -248,19 +295,18 @@ async function handleDelete (client, metaCol, masterCol, metadata, master, id, u
   // Soft delete
   await masterCol.updateOne(
     { primaryKey: id },
-    { $set: { deleted: true, status: 'deleted', updatedAt: getTimezoneDate(params), updatedBy: user, deletedAt: getTimezoneDate(params), deletedBy: user } }
+    { $set: { deleted: true, status: 'deleted', updatedBy: user, deletedBy: user }, $currentDate: { updatedAt: true, deletedAt: true } }
   )
 
-  // Update count + lastModifiedBy
-  const allRecs = await masterCol.find({}).toArray()
-  const count = allRecs.filter(r => r.deleted === false).length
-  await metaCol.updateOne(
-    { masterName: master },
-    { $set: { recordCount: count, updatedAt: getTimezoneDate(params), lastModifiedBy: user } }
-  )
-
-  await createAuditLog(client, { masterName: master, operation: 'delete-record', actor: user, status: 'success', affectedRecords: 1, recordId: id })
-  await publishMutationEvent(client, 'record.deleted', { master, recordId: id, actor: user })
+  // Run post-write operations in parallel
+  await Promise.all([
+    metaCol.updateOne(
+      { masterName: master },
+      { $set: { lastModifiedBy: user }, $currentDate: { updatedAt: true }, $inc: { recordCount: -1 } }
+    ),
+    createAuditLog(client, { masterName: master, operation: 'delete-record', actor: user, status: 'success', affectedRecords: 1, recordId: id }),
+    publishMutationEvent(client, 'record.deleted', { master, recordId: id, actor: user })
+  ])
 
   return createResponse({ status: 'success', message: `Record '${id}' deleted` })
 }

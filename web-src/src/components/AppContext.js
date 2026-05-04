@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react'
 import { resolveCurrentUser } from './actionInvoker'
 
-const AppContext = createContext({ runtime: null, ims: null, userRole: null, permissions: {}, userLoading: true, userError: null, refetchUser: () => {} })
+const AppContext = createContext({ runtime: null, ims: null, userRole: null, permissions: {}, userLoading: true, userError: null, appSettings: {}, refetchUser: () => {} })
 
 export function AppProvider ({ runtime, ims, children }) {
   const [userRole, setUserRole] = useState(null)
@@ -9,6 +9,7 @@ export function AppProvider ({ runtime, ims, children }) {
   const [userInfo, setUserInfo] = useState(null)
   const [userLoading, setUserLoading] = useState(true)
   const [userError, setUserError] = useState(null)
+  const [appSettings, setAppSettings] = useState({})
 
   const fetchUser = useCallback(async () => {
     if (!ims || !ims.token) {
@@ -23,6 +24,7 @@ export function AppProvider ({ runtime, ims, children }) {
         setUserRole(result.roleName)
         setPermissions(result.permissions || {})
         setUserInfo({ email: result.email, firstName: result.firstName, lastName: result.lastName, roleId: result.roleId })
+        if (result.appSettings) setAppSettings(result.appSettings)
       } else {
         setUserRole(null)
         setPermissions({})
@@ -50,7 +52,7 @@ export function AppProvider ({ runtime, ims, children }) {
   }
 
   return (
-    <AppContext.Provider value={{ runtime, ims, userRole, permissions, userInfo, userLoading, userError, hasPermission, refetchUser: fetchUser }}>
+    <AppContext.Provider value={{ runtime, ims, userRole, permissions, userInfo, userLoading, userError, appSettings, hasPermission, refetchUser: fetchUser }}>
       {children}
     </AppContext.Provider>
   )

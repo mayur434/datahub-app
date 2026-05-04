@@ -35,14 +35,18 @@ async function main (params) {
 
   const method = (params.__ow_method || 'get').toLowerCase()
 
-  // For PUT/DELETE, body params arrive in __ow_body (base64-encoded JSON), not merged into params
-  if ((method === 'put' || method === 'delete') && params.__ow_body) {
+  // Parse body for POST (all mutations use POST; body may arrive in __ow_body or already merged)
+  if (method === 'post' && params.__ow_body) {
     try {
-      const bodyStr = Buffer.from(params.__ow_body, 'base64').toString('utf-8')
-      const bodyParams = JSON.parse(bodyStr)
+      const raw = params.__ow_body
+      const bodyParams = typeof raw === 'object' ? raw
+        : (() => { try { return JSON.parse(raw) } catch (e) { return JSON.parse(Buffer.from(raw, 'base64').toString('utf-8')) } })()
       Object.assign(params, bodyParams)
     } catch (e) { /* ignore parse errors */ }
   }
+
+  // Determine operation: GET → list, POST → op param (create/update/delete)
+  const op = (params.op || '').toLowerCase()
 
   let client
   try {
@@ -55,18 +59,27 @@ async function main (params) {
     const user = await getUserFromParams(params, client)
     const partnersCol = await client.collection(COLLECTIONS.PARTNERS)
 
-    switch (method) {
-      case 'get':
-        return await handleList(partnersCol, params)
-      case 'post':
-        return await handleCreate(client, partnersCol, params, user)
-      case 'put':
-        return await handleUpdate(client, partnersCol, params, user)
-      case 'delete':
-        return await handleDelete(client, partnersCol, params, user)
-      default:
-        return createErrorResponse(`Unsupported method: ${method}`, 405)
+    if (method === 'get') return await handleList(partnersCol, params)
+
+    if (method === 'post') {
+      switch (op) {
+        case 'create':
+          return await handleCreate(client, partnersCol, params, user)
+        case 'update':
+          return await handleUpdate(client, partnersCol, params, user)
+        case 'delete':
+          return await handleDelete(client, partnersCol, params, user)
+        default:
+          // If partnerId is present but no op, treat as update (likely body parse issue)
+          if (params.partnerId) {
+            return await handleUpdate(client, partnersCol, params, user)
+          }
+          // Backwards compat: POST without op → create
+          return await handleCreate(client, partnersCol, params, user)
+      }
     }
+
+    return createErrorResponse(`Unsupported method: ${method}`, 405)
   } catch (error) {
     console.error('Partner management error:', error)
     return createErrorResponse(`Operation failed: ${error.message}`, 500)

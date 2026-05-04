@@ -102,11 +102,12 @@ async function main (params) {
 
   const method = (params.__ow_method || 'get').toLowerCase()
 
-  // Parse body for POST/PUT
+  // Parse body for POST/PUT — body may arrive as base64, plain JSON string, or already-parsed object
   if ((method === 'post' || method === 'put') && params.__ow_body) {
     try {
-      const bodyStr = Buffer.from(params.__ow_body, 'base64').toString('utf-8')
-      const bodyParams = JSON.parse(bodyStr)
+      const raw = params.__ow_body
+      const bodyParams = typeof raw === 'object' ? raw
+        : (() => { try { return JSON.parse(raw) } catch (e) { return JSON.parse(Buffer.from(raw, 'base64').toString('utf-8')) } })()
       Object.assign(params, bodyParams)
     } catch (e) { /* ignore parse errors */ }
   }
@@ -178,6 +179,23 @@ async function handleResolve (client, params) {
     })
   }
 
+  // Piggyback app settings onto resolve response to eliminate a separate cold-start call
+  let appSettings = {}
+  try {
+    const settingsDoc = await getCachedSettings(client)
+    if (settingsDoc) {
+      const dm = settingsDoc.dataManagement || {}
+      const ui = settingsDoc.ui || {}
+      const guardrails = settingsDoc.guardrails || {}
+      appSettings = {
+        defaultPageSize: dm.defaultPageSize || guardrails.defaultPageSize || 25,
+        maxFileSizeMB: dm.maxFileSizeMB || guardrails.maxFileSizeMB || 10,
+        maxRecordsPerFile: dm.maxRecordsPerFile || guardrails.maxRecordsPerFile || 50000,
+        uiPageSize: ui.defaultPageSize || 25
+      }
+    }
+  } catch (_) { /* non-critical — settings will fall back to defaults on the client */ }
+
   // Return permissions and user info (never expose internal IDs or other users' data)
   return createResponse({
     authorized: true,
@@ -187,7 +205,8 @@ async function handleResolve (client, params) {
     roleName: resolved.role.name,
     roleId: resolved.role.roleId,
     permissions: resolved.permissions,
-    features: Object.values(APP_FEATURES)
+    features: Object.values(APP_FEATURES),
+    appSettings
   })
 }
 

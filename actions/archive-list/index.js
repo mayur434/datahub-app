@@ -63,12 +63,14 @@ async function main (params) {
       .limit(ps)
       .toArray()
 
-    // Enrich with master display names
+    // Enrich with master display names — batch-fetch with $in instead of N+1
     const masterNames = [...new Set(archives.map(a => a.masterName))]
+    const masterMetaDocs = masterNames.length > 0
+      ? await metaCol.find({ masterName: { $in: masterNames } }).toArray()
+      : []
     const masterMeta = {}
-    for (const name of masterNames) {
-      const meta = await safeFindOne(metaCol, { masterName: name })
-      if (meta) masterMeta[name] = { displayName: meta.displayName, primaryKey: meta.primaryKey }
+    for (const meta of masterMetaDocs) {
+      masterMeta[meta.masterName] = { displayName: meta.displayName, primaryKey: meta.primaryKey }
     }
 
     const enrichedArchives = archives.map(a => ({

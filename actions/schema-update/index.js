@@ -92,17 +92,12 @@ async function handleAddField (client, metaCol, masterCol, metadata, master, fie
     { $set: { schema: metadata.schema, schemaVersionId: metadata.schemaVersionId, updatedAt: getTimezoneDate(params), lastModifiedBy: user } }
   )
 
-  // Migrate records with default value in per-master collection
+  // Migrate records with default value in per-master collection using DB-level query
   if (field.defaultValue !== undefined && field.defaultValue !== null) {
-    const allRecs = await masterCol.find({}).toArray()
-    const toUpdate = allRecs.filter(r => r.deleted !== true && r.data && r.data[field.name] === undefined)
-    for (const rec of toUpdate) {
-      rec.data[field.name] = field.defaultValue
-      await masterCol.updateOne(
-        { primaryKey: rec.primaryKey },
-        { $set: { data: rec.data, updatedAt: getTimezoneDate(params), updatedBy: user } }
-      )
-    }
+    await masterCol.updateMany(
+      { deleted: { $ne: true }, [`data.${field.name}`]: { $exists: false } },
+      { $set: { [`data.${field.name}`]: field.defaultValue, updatedAt: getTimezoneDate(params), updatedBy: user } }
+    )
   }
 
   await createAuditLog(client, { masterName: master, operation: 'schema-add-field', actor: user, status: 'success' })
@@ -170,17 +165,14 @@ async function handleRenameField (client, metaCol, masterCol, metadata, master, 
 
   metadata.schema[idx].name = field.newName
 
-  // Rename field in all records in per-master collection
-  const allRecs = await masterCol.find({}).toArray()
-  const toRename = allRecs.filter(r => r.deleted !== true && r.data && r.data[field.name] !== undefined)
-  for (const rec of toRename) {
-    rec.data[field.newName] = rec.data[field.name]
-    delete rec.data[field.name]
-    await masterCol.updateOne(
-      { primaryKey: rec.primaryKey },
-      { $set: { data: rec.data, updatedAt: getTimezoneDate(params), updatedBy: user } }
-    )
-  }
+  // Rename field in all records atomically using $rename (single DB call instead of N+1)
+  await masterCol.updateMany(
+    { deleted: { $ne: true }, [`data.${field.name}`]: { $exists: true } },
+    {
+      $rename: { [`data.${field.name}`]: `data.${field.newName}` },
+      $set: { updatedAt: getTimezoneDate(params), updatedBy: user }
+    }
+  )
 
   const currentSchemaVersion = parseInt((metadata.schemaVersionId || 'schema-v0').replace('schema-v', ''))
   metadata.schemaVersionId = `schema-v${currentSchemaVersion + 1}`

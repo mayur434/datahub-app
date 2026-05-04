@@ -6,20 +6,26 @@
   "total": 2,
   "data": [
     {
+      "master_id": "1",
       "sku": "ABC123",
       "name": "Shoe 1",
       "brand": "Nike",
       "category": "Footwear",
       "status": "active",
-      "region": "IN"
+      "region": "IN",
+      "_createdAt": "2026-05-01T10:30:00.000Z",
+      "_createdBy": "admin"
     },
     {
+      "master_id": "2",
       "sku": "XYZ456",
       "name": "Shoe 2",
       "brand": "Adidas",
       "category": "Footwear",
       "status": "active",
-      "region": "US"
+      "region": "US",
+      "_createdAt": "2026-05-01T11:00:00.000Z",
+      "_createdBy": "admin"
     }
   ],
   "aggregations": [

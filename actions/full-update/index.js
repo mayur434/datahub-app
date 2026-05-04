@@ -4,7 +4,7 @@
  * Deletes old records, inserts new ones from CSV into per-master collection.
  */
 
-const { getDbClient, safeFindOne, COLLECTIONS, getMasterCollection, parseCSV, validateCSV, createAuditLog, createResponse, createErrorResponse, validateIMSToken, getUserFromParams, checkPermission, checkStorageGuardrails, estimateFileSizeMB, injectRecordAuditFields, getTimezoneDate, enforceAppPermission } = require('../mdm-utils')
+const { getDbClient, safeFindOne, COLLECTIONS, getMasterCollection, parseCSV, validateCSV, createAuditLog, createResponse, createErrorResponse, validateIMSToken, getUserFromParams, checkPermission, checkStorageGuardrails, estimateFileSizeMB, enforceAppPermission, decompressCsvContent } = require('../mdm-utils')
 
 async function main (params) {
   if (params.__ow_method === 'options') return createResponse({})
@@ -15,7 +15,7 @@ async function main (params) {
   let client
   try {
     const master = params.master || params.entity
-    const { csvContent } = params
+    const csvContent = decompressCsvContent(params)
     if (!master || !csvContent) {
       return createErrorResponse('Missing required parameters: master, csvContent')
     }
@@ -55,8 +55,7 @@ async function main (params) {
 
     // Storage guardrail — full-update replaces, so net new = newRecords - oldRecords
     const fileSizeMB = estimateFileSizeMB(csvContent)
-    const allOld = await masterCol.find({}).toArray()
-    const oldRecordCount = allOld.filter(r => r.deleted !== true).length
+    const oldRecordCount = await masterCol.countDocuments({ deleted: { $ne: true } })
     const netNew = Math.max(0, records.length - oldRecordCount)
     if (netNew > 0) {
       const guardrail = await checkStorageGuardrails(client, {
@@ -73,34 +72,36 @@ async function main (params) {
 
     // Insert new records first (before deleting old) for atomicity
     const auditConfig = metadata.recordAudit
+    const now = new Date()
     const recordDocs = records.map(record => {
-      if (auditConfig) injectRecordAuditFields(record, auditConfig, user, params, true)
+      if (auditConfig && auditConfig.enabled) {
+        if (auditConfig.createdAt) record._createdAt = now
+        if (auditConfig.updatedAt) record._updatedAt = now
+        if (auditConfig.createdBy) record._createdBy = user
+        if (auditConfig.updatedBy) record._updatedBy = user
+      }
       return {
-        primaryKey: record[metadata.primaryKey],
+        primaryKey: String(record[metadata.primaryKey]),
         data: record,
         status: 'active',
         deleted: false,
-        createdAt: getTimezoneDate(params),
+        createdAt: now,
         createdBy: user,
-        updatedAt: getTimezoneDate(params),
+        updatedAt: now,
         updatedBy: user
       }
     })
 
     await masterCol.insertMany(recordDocs)
 
-    // Delete old records (those NOT in the new batch)
-    const allRecords = await masterCol.find({}).toArray()
-    const newPKs = new Set(recordDocs.map(r => r.primaryKey))
-    const toDelete = allRecords.filter(r => !newPKs.has(r.primaryKey))
-    for (const rec of toDelete) {
-      await masterCol.deleteOne({ primaryKey: rec.primaryKey })
-    }
+    // Delete old records (those NOT in the new batch) using $nin for efficiency
+    const newPKs = recordDocs.map(r => r.primaryKey)
+    await masterCol.deleteMany({ primaryKey: { $nin: newPKs } })
 
     // Update metadata
     await metaCol.updateOne(
       { masterName: master },
-      { $set: { recordCount: records.length, updatedAt: getTimezoneDate(params), lastModifiedBy: user } }
+      { $set: { recordCount: records.length, lastModifiedBy: user }, $currentDate: { updatedAt: true } }
     )
 
 

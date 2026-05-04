@@ -127,56 +127,46 @@ async function main (params) {
         }
       }
 
-      // Query per-master collection — aio-lib-db does not reliably support
-      // compound filters with booleans. JS-level safety filter applied after fetch.
-      const allRecords = await masterCol.find({}).toArray()
-      const activeRecords = allRecords.filter(r => r.deleted !== true && r.status !== 'deleted')
+      // Query per-master collection using DB-level queries
+      const activeFilter = { deleted: { $ne: true }, status: { $ne: 'deleted' } }
       const filterKeys = Object.keys(filters)
 
-      // Compute aggregation for each facet field
+      // Compute aggregation for each facet field using aggregation pipeline
       for (const facet of response.facets) {
         const fieldName = facet.field
         const maxValues = facet.limit || facetsConfig.maxValuesPerFacet || 100
 
         // Exclude current field from filter for "OR" style faceting (shows all options)
-        const facetRecords = activeRecords.filter(r => {
-          if (!r.data) return false
-          return filterKeys.every(key => {
-            if (key === fieldName) return true
-            const pattern = new RegExp(`^${escapeRegex(filters[key])}$`, 'i')
-            return pattern.test(String(r.data[key] || ''))
-          })
-        })
-
-        // Count distinct values
-        const valueCounts = {}
-        for (const r of facetRecords) {
-          const val = r.data[fieldName]
-          if (val != null && val !== '') {
-            const strVal = String(val)
-            valueCounts[strVal] = (valueCounts[strVal] || 0) + 1
-          }
+        const facetFilter = { ...activeFilter }
+        for (const key of filterKeys) {
+          if (key === fieldName) continue
+          facetFilter[`data.${key}`] = { $regex: `^${escapeRegex(filters[key])}$`, $options: 'i' }
         }
 
-        // Sort facet values
-        let sortedValues = Object.entries(valueCounts)
-        if (facet.sortBy === 'count') {
-          sortedValues.sort((a, b) => facet.sortOrder === 'asc' ? a[1] - b[1] : b[1] - a[1])
-        } else {
-          sortedValues.sort((a, b) => facet.sortOrder === 'asc' ? a[0].localeCompare(b[0]) : b[0].localeCompare(a[0]))
-        }
-        sortedValues = sortedValues.slice(0, maxValues)
+        // Use aggregation pipeline for facet counting
+        const sortStage = facet.sortBy === 'count'
+          ? { count: facet.sortOrder === 'asc' ? 1 : -1 }
+          : { _id: facet.sortOrder === 'asc' ? 1 : -1 }
 
-        facet.values = sortedValues.map(([value, count]) => ({
-          value,
-          count,
-          selected: filters[fieldName] ? String(filters[fieldName]).toLowerCase() === value.toLowerCase() : false
+        const pipeline = masterCol.aggregate()
+          .match(facetFilter)
+          .match({ [`data.${fieldName}`]: { $exists: true, $ne: null, $ne: '' } })
+          .group({ _id: `$data.${fieldName}`, count: { $sum: 1 } })
+          .sort(sortStage)
+          .limit(maxValues)
+
+        const facetResults = await pipeline.toArray()
+
+        facet.values = facetResults.map(r => ({
+          value: String(r._id),
+          count: r.count,
+          selected: filters[fieldName] ? String(filters[fieldName]).toLowerCase() === String(r._id).toLowerCase() : false
         }))
-        facet.totalValues = sortedValues.length
+        facet.totalValues = facetResults.length
       }
 
       // Total active records for this entity
-      response.totalRecords = activeRecords.length
+      response.totalRecords = await masterCol.countDocuments(activeFilter)
     }
 
     return createResponse(response)

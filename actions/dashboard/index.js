@@ -55,8 +55,12 @@ async function computeDashboard (client) {
   const metaCol = await client.collection(COLLECTIONS.METADATA)
   const auditCol = await client.collection(COLLECTIONS.AUDIT)
 
-  const allFiles = await metaCol.find({ status: { $ne: 'deleted' } }).toArray()
-  const files = allFiles.filter(f => f.status !== 'deleted')
+  // Run all three queries in parallel
+  const [files, recentLogs, auditAlerts] = await Promise.all([
+    metaCol.find({ status: { $ne: 'deleted' } }).toArray(),
+    auditCol.find({}).sort({ timestamp: -1 }).limit(10).toArray(),
+    auditCol.countDocuments({ status: 'failure' })
+  ])
 
   let totalRecords = 0
   let publicApis = 0
@@ -77,13 +81,6 @@ async function computeDashboard (client) {
 
   recentUploads.sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt))
 
-  const recentLogs = await auditCol.find({})
-    .sort({ timestamp: -1 })
-    .limit(10)
-    .toArray()
-
-  const auditAlerts = await auditCol.countDocuments({ status: 'failure' })
-
   return {
     totalFiles: files.length,
     publicApis,
@@ -91,7 +88,17 @@ async function computeDashboard (client) {
     totalRecords,
     auditAlerts,
     recentUploads: recentUploads.slice(0, 5),
-    recentLogs
+    recentLogs,
+    masters: files.map(f => ({
+      masterName: f.masterName,
+      displayName: f.displayName,
+      description: f.description,
+      visibility: f.visibility,
+      status: f.status,
+      crudEnabled: f.crudEnabled,
+      recordCount: f.recordCount,
+      updatedAt: f.updatedAt
+    }))
   }
 }
 

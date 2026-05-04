@@ -194,17 +194,19 @@ async function collectStorageMetrics (client, tierLimits) {
 async function collectEntityBreakdown (client) {
   try {
     const metaCol = await client.collection(COLLECTIONS.METADATA)
-    const allMeta = await metaCol.find({}).toArray()
-    const entities = allMeta.filter(m => m.status !== 'deleted')
+    const allMeta = await metaCol.find({ status: { $ne: 'deleted' } }).toArray()
+    const entities = allMeta
 
     const auditCol = await client.collection(COLLECTIONS.AUDIT)
-    const allAudit = await auditCol.find({}).toArray()
+
+    // Use aggregation pipeline to count audit logs per entity
+    const auditCounts = await auditCol.aggregate()
+      .match({ type: { $ne: 'event' }, masterName: { $exists: true } })
+      .group({ _id: '$masterName', count: { $sum: 1 } })
+      .toArray()
     const auditByEntity = {}
-    for (const a of allAudit) {
-      if (a.masterName && a.type !== 'event') {
-        if (!auditByEntity[a.masterName]) auditByEntity[a.masterName] = 0
-        auditByEntity[a.masterName]++
-      }
+    for (const a of auditCounts) {
+      auditByEntity[a._id] = a.count
     }
 
     return entities.map(e => {
@@ -327,57 +329,79 @@ async function collectFailureReport (client, params) {
   since.setDate(since.getDate() - days)
   const sinceISO = since.toISOString()
 
-  const allLogs = await auditCol.find({}).toArray()
-  const recentLogs = allLogs.filter(l => l.timestamp && l.timestamp >= sinceISO && l.type !== 'event')
-  const failures = recentLogs.filter(l => l.status === 'failure' || l.status === 'error')
-  const successes = recentLogs.filter(l => l.status === 'success')
+  const dateFilter = { timestamp: { $gte: sinceISO }, type: { $ne: 'event' } }
 
+  // Use aggregation $facet to compute all stats in a single DB round-trip
+  const facetResult = await auditCol.aggregate()
+    .match(dateFilter)
+    .group({
+      _id: {
+        operation: { $ifNull: ['$operation', 'unknown'] },
+        status: { $ifNull: ['$status', 'unknown'] },
+        masterName: { $ifNull: ['$masterName', '_system'] },
+        day: { $substrBytes: [{ $ifNull: ['$timestamp', ''] }, 0, 10] },
+        actor: { $ifNull: [{ $ifNull: ['$actor', '$user'] }, 'unknown'] }
+      },
+      count: { $sum: 1 }
+    })
+    .toArray()
+
+  // Compute stats from grouped results
+  let totalOps = 0, totalFailures = 0, totalSuccesses = 0
   const failuresByOperation = {}
   const failuresByEntity = {}
   const failuresByDay = {}
   const failuresByUser = {}
-
-  for (const f of failures) {
-    const op = f.operation || 'unknown'
-    failuresByOperation[op] = (failuresByOperation[op] || 0) + 1
-    const ent = f.masterName || '_system'
-    failuresByEntity[ent] = (failuresByEntity[ent] || 0) + 1
-    const day = (f.timestamp || '').substring(0, 10)
-    if (day) failuresByDay[day] = (failuresByDay[day] || 0) + 1
-    const user = f.actor || f.user || 'unknown'
-    failuresByUser[user] = (failuresByUser[user] || 0) + 1
-  }
-
   const operationStats = {}
-  for (const log of recentLogs) {
-    const op = log.operation || 'unknown'
-    if (!operationStats[op]) operationStats[op] = { total: 0, success: 0, failure: 0, successRate: 0 }
-    operationStats[op].total++
-    if (log.status === 'success') operationStats[op].success++
-    else if (log.status === 'failure' || log.status === 'error') operationStats[op].failure++
+
+  for (const bucket of facetResult) {
+    const { operation, status, masterName, day, actor } = bucket._id
+    const count = bucket.count
+    totalOps += count
+
+    if (!operationStats[operation]) operationStats[operation] = { total: 0, success: 0, failure: 0, successRate: 0 }
+    operationStats[operation].total += count
+
+    if (status === 'success') {
+      totalSuccesses += count
+      operationStats[operation].success += count
+    } else if (status === 'failure' || status === 'error') {
+      totalFailures += count
+      operationStats[operation].failure += count
+      failuresByOperation[operation] = (failuresByOperation[operation] || 0) + count
+      failuresByEntity[masterName] = (failuresByEntity[masterName] || 0) + count
+      if (day) failuresByDay[day] = (failuresByDay[day] || 0) + count
+      failuresByUser[actor] = (failuresByUser[actor] || 0) + count
+    }
   }
+
   for (const op of Object.keys(operationStats)) {
     const s = operationStats[op]
     s.successRate = s.total > 0 ? parseFloat(((s.success / s.total) * 100).toFixed(1)) : 0
   }
 
-  const recentFailures = failures
-    .sort((a, b) => (b.timestamp || '').localeCompare(a.timestamp || ''))
-    .slice(0, 50)
-    .map(f => ({
+  // Fetch only the recent failure documents (limited) for the detail list
+  const recentFailures = await auditCol.find({
+    ...dateFilter,
+    $or: [{ status: 'failure' }, { status: 'error' }]
+  })
+    .sort({ timestamp: -1 })
+    .limit(50)
+    .toArray()
+    .then(docs => docs.map(f => ({
       timestamp: f.timestamp, operation: f.operation, masterName: f.masterName,
       actor: f.actor || f.user, error: f.error || f.message || 'Unknown error',
       recordId: f.recordId || null
-    }))
+    })))
 
   return {
     period: { days, since: sinceISO },
     summary: {
-      totalOperations: recentLogs.length,
-      totalFailures: failures.length,
-      totalSuccesses: successes.length,
-      overallSuccessRate: recentLogs.length > 0 ? parseFloat(((successes.length / recentLogs.length) * 100).toFixed(1)) : 100,
-      failureRate: recentLogs.length > 0 ? parseFloat(((failures.length / recentLogs.length) * 100).toFixed(1)) : 0
+      totalOperations: totalOps,
+      totalFailures,
+      totalSuccesses,
+      overallSuccessRate: totalOps > 0 ? parseFloat(((totalSuccesses / totalOps) * 100).toFixed(1)) : 100,
+      failureRate: totalOps > 0 ? parseFloat(((totalFailures / totalOps) * 100).toFixed(1)) : 0
     },
     failuresByOperation, failuresByEntity, failuresByDay, failuresByUser, operationStats, recentFailures
   }
@@ -394,32 +418,57 @@ async function collectAnalytics (client, params) {
   since.setDate(since.getDate() - days)
   const sinceISO = since.toISOString()
 
-  const allLogs = await auditCol.find({}).toArray()
-  const recentLogs = allLogs.filter(l => l.timestamp && l.timestamp >= sinceISO && l.type !== 'event')
+  const dateFilter = { timestamp: { $gte: sinceISO }, type: { $ne: 'event' } }
 
+  // Use aggregation to compute grouped stats in a single DB round-trip
+  const groupedStats = await auditCol.aggregate()
+    .match(dateFilter)
+    .group({
+      _id: {
+        operation: { $ifNull: ['$operation', 'unknown'] },
+        masterName: { $ifNull: ['$masterName', '_system'] },
+        day: { $substrBytes: [{ $ifNull: ['$timestamp', ''] }, 0, 10] },
+        actor: { $ifNull: [{ $ifNull: ['$actor', '$user'] }, 'unknown'] }
+      },
+      count: { $sum: 1 },
+      recordsAffected: { $sum: { $ifNull: ['$affectedRecords', 0] } }
+    })
+    .toArray()
+
+  const READ_OPS = ['read', 'query', 'list', 'search', 'facets', 'dashboard', 'export']
   const invocationsByOperation = {}
   const invocationsByEntity = {}
   const invocationsByDay = {}
   const invocationsByUser = {}
-  const hourlyDistribution = new Array(24).fill(0)
-  const weekdayDistribution = new Array(7).fill(0)
-  const READ_OPS = ['read', 'query', 'list', 'search', 'facets', 'dashboard', 'export']
   let readOps = 0
   let writeOps = 0
   let recordsAffected = 0
+  let totalInvocations = 0
 
-  for (const log of recentLogs) {
-    const op = log.operation || 'unknown'
-    invocationsByOperation[op] = (invocationsByOperation[op] || 0) + 1
-    const ent = log.masterName || '_system'
-    invocationsByEntity[ent] = (invocationsByEntity[ent] || 0) + 1
-    const day = (log.timestamp || '').substring(0, 10)
-    if (day) invocationsByDay[day] = (invocationsByDay[day] || 0) + 1
-    const user = log.actor || log.user || 'unknown'
-    invocationsByUser[user] = (invocationsByUser[user] || 0) + 1
-    if (READ_OPS.some(r => op.toLowerCase().includes(r))) readOps++
-    else writeOps++
-    if (log.affectedRecords) recordsAffected += log.affectedRecords
+  for (const bucket of groupedStats) {
+    const { operation, masterName, day, actor } = bucket._id
+    const count = bucket.count
+    totalInvocations += count
+    recordsAffected += bucket.recordsAffected
+
+    invocationsByOperation[operation] = (invocationsByOperation[operation] || 0) + count
+    invocationsByEntity[masterName] = (invocationsByEntity[masterName] || 0) + count
+    if (day) invocationsByDay[day] = (invocationsByDay[day] || 0) + count
+    invocationsByUser[actor] = (invocationsByUser[actor] || 0) + count
+
+    if (operation && READ_OPS.some(r => operation.toLowerCase().includes(r))) readOps += count
+    else writeOps += count
+  }
+
+  // Fetch hourly/weekday distributions via separate lightweight aggregation
+  const hourlyWeekday = await auditCol.find(dateFilter)
+    .sort({ timestamp: -1 })
+    .limit(5000)
+    .toArray()
+
+  const hourlyDistribution = new Array(24).fill(0)
+  const weekdayDistribution = new Array(7).fill(0)
+  for (const log of hourlyWeekday) {
     try {
       const d = new Date(log.timestamp)
       hourlyDistribution[d.getHours()]++
@@ -436,8 +485,8 @@ async function collectAnalytics (client, params) {
 
   return {
     period: { days, since: sinceISO },
-    totalInvocations: recentLogs.length,
-    avgDailyInvocations: sortedDays.length > 0 ? parseFloat((recentLogs.length / sortedDays.length).toFixed(1)) : 0,
+    totalInvocations,
+    avgDailyInvocations: sortedDays.length > 0 ? parseFloat((totalInvocations / sortedDays.length).toFixed(1)) : 0,
     readOps, writeOps,
     readWriteRatio: writeOps > 0 ? `${(readOps / writeOps).toFixed(1)}:1` : 'read-only',
     totalRecordsAffected: recordsAffected,
@@ -458,46 +507,64 @@ async function collectUsageMetrics (client, settings, tierLimits, env) {
   const since = new Date()
   since.setDate(since.getDate() - 30)
   const sinceISO = since.toISOString()
-  const allLogs = await auditCol.find({}).toArray()
-  const recentLogs = allLogs.filter(l => l.timestamp && l.timestamp >= sinceISO && l.type !== 'event')
+  const dateFilter = { timestamp: { $gte: sinceISO }, type: { $ne: 'event' } }
+
+  // Use aggregation to compute stats in a single DB round-trip instead of full scan
+  const GROWTH_OPS = ['upload', 'full-update', 'delta-update', 'bulk-update', 'create-record']
+  const usageAgg = await auditCol.aggregate()
+    .match(dateFilter)
+    .group({
+      _id: {
+        operation: { $ifNull: ['$operation', 'unknown'] },
+        masterName: { $ifNull: ['$masterName', '_system'] }
+      },
+      count: { $sum: 1 },
+      recordsAffected: { $sum: { $ifNull: ['$affectedRecords', 0] } }
+    })
+    .toArray()
 
   const READ_OPS = ['read', 'query', 'list', 'search', 'facets', 'dashboard', 'export']
   let readOps = 0
   let writeOps = 0
   let totalRecordsAffected = 0
+  let totalLogs = 0
   const recordsByOperation = {}
   const entityGrowth = {}
 
-  for (const log of recentLogs) {
-    const op = (log.operation || '').toLowerCase()
-    if (READ_OPS.some(r => op.includes(r))) readOps++
-    else writeOps++
-    if (log.affectedRecords) {
-      totalRecordsAffected += log.affectedRecords
-      recordsByOperation[log.operation] = (recordsByOperation[log.operation] || 0) + log.affectedRecords
+  for (const bucket of usageAgg) {
+    const op = (bucket._id.operation || '').toLowerCase()
+    const masterName = bucket._id.masterName
+    const count = bucket.count
+    totalLogs += count
+    totalRecordsAffected += bucket.recordsAffected
+
+    if (READ_OPS.some(r => op.includes(r))) readOps += count
+    else writeOps += count
+
+    if (bucket.recordsAffected > 0) {
+      recordsByOperation[bucket._id.operation] = (recordsByOperation[bucket._id.operation] || 0) + bucket.recordsAffected
     }
-    if (log.masterName && log.masterName !== '_system' && log.affectedRecords) {
-      if (['upload', 'full-update', 'delta-update', 'bulk-update', 'create-record'].includes(log.operation)) {
-        entityGrowth[log.masterName] = (entityGrowth[log.masterName] || 0) + log.affectedRecords
-      }
+
+    if (masterName && masterName !== '_system' && bucket.recordsAffected > 0 && GROWTH_OPS.includes(bucket._id.operation)) {
+      entityGrowth[masterName] = (entityGrowth[masterName] || 0) + bucket.recordsAffected
     }
   }
 
   const daysCovered = Math.max(1, Math.ceil((Date.now() - since.getTime()) / 86400000))
   const monthlyReadOps = Math.ceil((readOps / daysCovered) * 30)
   const monthlyWriteOps = Math.ceil((writeOps / daysCovered) * 30)
-  const monthlyActivations = Math.ceil((recentLogs.length / daysCovered) * 30)
+  const monthlyActivations = Math.ceil((totalLogs / daysCovered) * 30)
 
   const meshSettings = settings.api || {}
   const meshCacheTTL = env.apiMeshCacheTTL
   const meshCacheEfficiency = meshCacheTTL > 0 ? Math.min(95, 50 + meshCacheTTL / 10) : 0
 
   const metaCol = await client.collection(COLLECTIONS.METADATA)
-  const allMeta = await metaCol.find({}).toArray()
-  const activeMeta = allMeta.filter(m => m.status !== 'deleted')
+  const allMeta = await metaCol.find({ status: { $ne: 'deleted' } }).toArray()
+  const activeMeta = allMeta
   const entitiesCreatedRecently = activeMeta.filter(m => m.createdAt && m.createdAt >= sinceISO).length
 
-  const auditGrowthPerDay = recentLogs.length > 0 ? parseFloat((recentLogs.length / daysCovered).toFixed(1)) : 0
+  const auditGrowthPerDay = totalLogs > 0 ? parseFloat((totalLogs / daysCovered).toFixed(1)) : 0
   const auditDocsTotal = storage.collections?.[COLLECTIONS.AUDIT]?.documentCount || 0
   const daysUntilAuditFull = auditGrowthPerDay > 0
     ? Math.floor((storage.summary.remainingDocuments * 0.3) / auditGrowthPerDay)
@@ -512,10 +579,10 @@ async function collectUsageMetrics (client, settings, tierLimits, env) {
   return {
     throughput: {
       last30Days: {
-        totalOperations: recentLogs.length, readOperations: readOps, writeOperations: writeOps,
+        totalOperations: totalLogs, readOperations: readOps, writeOperations: writeOps,
         readWriteRatio: writeOps > 0 ? `${(readOps / writeOps).toFixed(1)}:1` : 'read-only',
         totalRecordsAffected,
-        avgOperationsPerDay: parseFloat((recentLogs.length / daysCovered).toFixed(1)),
+        avgOperationsPerDay: parseFloat((totalLogs / daysCovered).toFixed(1)),
         avgRecordsPerDay: parseFloat((totalRecordsAffected / daysCovered).toFixed(1))
       },
       projectedMonthly: {

@@ -35,8 +35,20 @@ async function main (params) {
     const updateFields = { updatedAt: getTimezoneDate(params), lastModifiedBy: user }
     if (displayName !== undefined) updateFields.displayName = displayName
     if (description !== undefined) updateFields.description = description
-    if (crudEnabled !== undefined) updateFields.crudEnabled = !!crudEnabled
-    if (allowedOperations !== undefined) updateFields.allowedOperations = { ...metadata.allowedOperations, ...allowedOperations }
+    if (crudEnabled !== undefined) {
+      updateFields.crudEnabled = !!crudEnabled
+      // Sync write-related allowed operations with crudEnabled toggle
+      const ops = metadata.allowedOperations || {}
+      updateFields.allowedOperations = {
+        ...ops,
+        create: !!crudEnabled,
+        update: !!crudEnabled,
+        patch: !!crudEnabled,
+        delete: !!crudEnabled,
+        bulkUpdate: !!crudEnabled
+      }
+    }
+    if (allowedOperations !== undefined) updateFields.allowedOperations = { ...(updateFields.allowedOperations || metadata.allowedOperations), ...allowedOperations }
     if (governance !== undefined) updateFields.governance = { ...metadata.governance, ...governance }
 
     await metaCol.updateOne({ masterName: master }, { $set: updateFields })

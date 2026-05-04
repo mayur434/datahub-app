@@ -7,6 +7,7 @@ import {
 import { useNavigate } from 'react-router-dom'
 import { invokeAction } from './actionInvoker'
 import { useNotifications } from './NotificationProvider'
+import useSwrCache from './useSwrCache'
 import Copy from '@spectrum-icons/workflow/Copy'
 import Add from '@spectrum-icons/workflow/Add'
 import Delete from '@spectrum-icons/workflow/Delete'
@@ -20,7 +21,16 @@ function PartnerConsole ({ runtime, ims }) {
   const [partners, setPartners] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
-  const [masters, setMasters] = useState([]) // { masterName, displayName, visibility, crudEnabled }
+
+  // SWR cache for eligible masters — avoids a cold-start on every PartnerConsole visit
+  const mastersSwr = useSwrCache('partner-masters', async () => {
+    const result = await invokeAction('file-list', {}, ims, 'GET')
+    const files = result.files || result.data || []
+    return files
+      .filter(f => (f.masterName || f.entityName) && f.visibility === 'public' && f.crudEnabled)
+      .map(f => ({ masterName: f.masterName || f.entityName, displayName: f.displayName || f.masterName || f.entityName }))
+  }, { ttl: 5 * 60 * 1000 })
+  const masters = mastersSwr.data || []
 
   // Create form state
   const [showCreate, setShowCreate] = useState(false)
@@ -43,7 +53,6 @@ function PartnerConsole ({ runtime, ims }) {
 
   useEffect(() => {
     loadPartners()
-    loadMasters()
   }, [])
 
   async function loadPartners () {
@@ -59,18 +68,6 @@ function PartnerConsole ({ runtime, ims }) {
     }
   }
 
-  async function loadMasters () {
-    try {
-      const result = await invokeAction('file-list', {}, ims, 'GET')
-      const files = result.files || result.data || []
-      // Only show masters that are public AND have CRUD enabled — partners can only access these
-      const eligible = files.filter(f => (f.masterName || f.entityName) && f.visibility === 'public' && f.crudEnabled)
-      setMasters(eligible.map(f => ({ masterName: f.masterName || f.entityName, displayName: f.displayName || f.masterName || f.entityName })))
-    } catch (e) {
-      // Non-critical — masters picker just won't populate
-    }
-  }
-
   async function handleCreate () {
     if (!createName.trim()) {
       notify.error('Partner name is required')
@@ -83,6 +80,7 @@ function PartnerConsole ({ runtime, ims }) {
     try {
       setCreating(true)
       const result = await invokeAction('partner-management', {
+        op: 'create',
         name: createName,
         description: createDesc,
         contactEmail: createEmail,
@@ -113,7 +111,7 @@ function PartnerConsole ({ runtime, ims }) {
 
   async function handleStatusChange (partnerId, newStatus) {
     try {
-      await invokeAction('partner-management', { partnerId, status: newStatus }, ims, 'PUT')
+      await invokeAction('partner-management', { op: 'update', partnerId, status: newStatus }, ims, 'POST')
       notify.success(`Partner status updated to ${newStatus}`)
       await loadPartners()
     } catch (e) {
@@ -123,7 +121,7 @@ function PartnerConsole ({ runtime, ims }) {
 
   async function handleRegenerateKey (partnerId) {
     try {
-      const result = await invokeAction('partner-management', { partnerId, regenerateKey: true }, ims, 'PUT')
+      const result = await invokeAction('partner-management', { op: 'update', partnerId, regenerateKey: true }, ims, 'POST')
       if (result.partnerKey) {
         setCreatedCreds({
           partnerId,
@@ -139,7 +137,7 @@ function PartnerConsole ({ runtime, ims }) {
 
   async function handleDelete (partnerId) {
     try {
-      await invokeAction('partner-management', { partnerId }, ims, 'DELETE')
+      await invokeAction('partner-management', { op: 'delete', partnerId }, ims, 'POST')
       notify.success('Partner removed')
       await loadPartners()
     } catch (e) {
@@ -171,12 +169,13 @@ function PartnerConsole ({ runtime, ims }) {
     try {
       setSaving(true)
       await invokeAction('partner-management', {
+        op: 'update',
         partnerId: editPartner.partnerId,
         name: editName,
         description: editDesc,
         contactEmail: editEmail,
         allowedMasters: editMasters
-      }, ims, 'PUT')
+      }, ims, 'POST')
       notify.success('Partner updated successfully')
       cancelEdit()
       await loadPartners()

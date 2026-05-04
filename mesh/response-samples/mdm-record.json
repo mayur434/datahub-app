@@ -1,11 +1,16 @@
 {
   "master": "product",
   "data": {
+    "master_id": "1",
     "sku": "ABC123",
     "name": "Shoe 1",
     "brand": "Nike",
     "category": "Footwear",
     "status": "active",
-    "region": "IN"
+    "region": "IN",
+    "_createdAt": "2026-05-01T10:30:00.000Z",
+    "_createdBy": "admin",
+    "_updatedAt": "2026-05-02T14:00:00.000Z",
+    "_updatedBy": "partner:DEPT"
   }
 }

@@ -42,7 +42,7 @@ async function main (params) {
     }
 
     // Build data-level filters from query params
-    const systemParams = ['master', 'entity', 'id', 'page', 'pageSize', 'sort', 'order', 'fields', 'filter', 'filters', '__ow_method', '__ow_headers', '__ow_path', '__ow_query', '__ow_body', '__ims_oauth_s2s', 'LOG_LEVEL', 'apiKey']
+    const systemParams = ['master', 'entity', 'id', 'page', 'pageSize', 'sort', 'order', 'fields', 'filter', 'filters', 'includeMeta', '__ow_method', '__ow_headers', '__ow_path', '__ow_query', '__ow_body', '__ims_oauth_s2s', 'LOG_LEVEL', 'apiKey']
     const dataFilters = {}
 
     // Parse 'filter' param: format is "field=value&field2=value2" or "field=value"
@@ -96,42 +96,27 @@ async function main (params) {
     const order = params.order === 'desc' ? -1 : 1
     const fields = params.fields ? params.fields.split(',').map(f => f.trim()) : null
 
-    // --- Optimized query: use skip/limit when no JS-level filters needed ---
+    // --- Optimized query: use DB-level filter, sort, skip/limit ---
     const filterKeys = Object.keys(dataFilters)
-    const needsJsFilter = filterKeys.length > 0
 
     let responseData, total
 
-    if (!needsJsFilter) {
-      // Fast path: DB-level pagination — no full-table scan
-      const allRecs = await masterCol.find({}).toArray()
-      const active = allRecs.filter(r => r.deleted !== true && r.status !== 'deleted')
-      total = active.length
-      active.sort((a, b) => {
-        const va = a.data?.[sort] || ''
-        const vb = b.data?.[sort] || ''
-        return order === 1 ? String(va).localeCompare(String(vb)) : String(vb).localeCompare(String(va))
-      })
-      const paged = active.slice((page - 1) * pageSize, page * pageSize)
-      responseData = paged.map(r => ({ ...r.data, _systemFields: { createdAt: r.createdAt, updatedAt: r.updatedAt, createdBy: r.createdBy, updatedBy: r.updatedBy } }))
-    } else {
-      // Slow path: filters require JS-level matching
-      const allRecords = await masterCol.find({}).toArray()
+    // Build DB-level query filter
+    const dbFilter = { deleted: { $ne: true }, status: { $ne: 'deleted' } }
 
-      let filtered = allRecords.filter(r => r.deleted !== true && r.status !== 'deleted')
-
-      filtered = filtered.filter(r => {
-        if (!r.data) return false
-        return filterKeys.every(key => {
-          const pattern = new RegExp(`^${escapeRegex(dataFilters[key])}$`, 'i')
-          return pattern.test(String(r.data[key] || ''))
-        })
-      })
-
-      total = filtered.length
-      const paged = filtered.slice((page - 1) * pageSize, page * pageSize)
-      responseData = paged.map(r => ({ ...r.data, _systemFields: { createdAt: r.createdAt, updatedAt: r.updatedAt, createdBy: r.createdBy, updatedBy: r.updatedBy } }))
+    // Apply data-level filters at DB level (case-insensitive regex match)
+    for (const key of filterKeys) {
+      dbFilter[`data.${key}`] = { $regex: `^${escapeRegex(dataFilters[key])}$`, $options: 'i' }
     }
+
+    // DB-level count, sort, skip, limit
+    total = await masterCol.countDocuments(dbFilter)
+    const cursor = masterCol.find(dbFilter)
+      .sort({ [`data.${sort}`]: order })
+      .skip((page - 1) * pageSize)
+      .limit(pageSize)
+    const paged = await cursor.toArray()
+    responseData = paged.map(r => ({ ...r.data, _systemFields: { createdAt: r.createdAt, updatedAt: r.updatedAt, createdBy: r.createdBy, updatedBy: r.updatedBy } }))
 
     // Apply field selection
     if (fields && fields.length > 0) {
@@ -148,7 +133,28 @@ async function main (params) {
       page,
       pageSize,
       total,
-      data: responseData
+      data: responseData,
+      ...(params.includeMeta ? {
+        file: {
+          masterName: metadata.masterName,
+          displayName: metadata.displayName,
+          description: metadata.description,
+          primaryKey: metadata.primaryKey,
+          visibility: metadata.visibility,
+          status: metadata.status,
+          crudEnabled: metadata.crudEnabled,
+          recordCount: metadata.recordCount,
+          schema: metadata.schema,
+          queryableFields: metadata.queryableFields,
+          requiredFields: metadata.requiredFields,
+          facetableFields: metadata.facetableFields,
+          api: metadata.api,
+          cache: metadata.cache,
+          createdBy: metadata.createdBy,
+          createdAt: metadata.createdAt,
+          updatedAt: metadata.updatedAt
+        }
+      } : {})
     })
   } catch (error) {
     console.error('Query data error:', error)

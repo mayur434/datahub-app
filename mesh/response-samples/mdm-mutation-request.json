@@ -1,6 +1,6 @@
 {
   "data": {
-    "id": "sample-1",
-    "name": "Sample Record"
+    "name": "Sample Record",
+    "category": "Demo"
   }
 }

@@ -63,7 +63,7 @@
               {
                 "type": "Mutation",
                 "field": "mdmCreate",
-                "path": "/?master={args.master}",
+                "path": "/?master={args.master}&operation=create",
                 "method": "POST",
                 "requestSchema": "./request-schemas/mutation-req.json",
                 "responseSchema": "./response-schemas/mdm-mutation.schema.json",
@@ -76,8 +76,8 @@
               {
                 "type": "Mutation",
                 "field": "mdmUpdate",
-                "path": "/?master={args.master}&id={args.id}",
-                "method": "PUT",
+                "path": "/?master={args.master}&id={args.id}&operation=update",
+                "method": "POST",
                 "requestSchema": "./request-schemas/mutation-req.json",
                 "responseSchema": "./response-schemas/mdm-mutation.schema.json",
                 "argTypeMap": {
@@ -92,8 +92,8 @@
               {
                 "type": "Mutation",
                 "field": "mdmPatch",
-                "path": "/?master={args.master}&id={args.id}",
-                "method": "PATCH",
+                "path": "/?master={args.master}&id={args.id}&operation=patch",
+                "method": "POST",
                 "requestSchema": "./request-schemas/mutation-req.json",
                 "responseSchema": "./response-schemas/mdm-mutation.schema.json",
                 "argTypeMap": {
@@ -108,8 +108,8 @@
               {
                 "type": "Mutation",
                 "field": "mdmDelete",
-                "path": "/?master={args.master}&id={args.id}",
-                "method": "DELETE",
+                "path": "/?master={args.master}&id={args.id}&operation=delete",
+                "method": "POST",
                 "responseSchema": "./response-schemas/mdm-mutation.schema.json",
                 "argTypeMap": {
                   "master": {

@@ -1,14 +1,15 @@
-import React, { useState, useEffect, useMemo } from 'react'
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import {
   Heading, View, Flex, Button, TextField, Text,
-  Picker, Item
+  Picker, Item, TextArea
 } from '@adobe/react-spectrum'
-import { fetchFileList, fetchFileDetail, queryData, invokeAction } from './actionInvoker'
+import { fetchFileList, fetchFileDetail, invokeAction } from './actionInvoker'
 import { useNotifications } from './NotificationProvider'
 import Code from '@spectrum-icons/workflow/Code'
+import Play from '@spectrum-icons/workflow/Play'
 
 /* ─── Constants ─── */
-const MESH_ENDPOINT = 'https://graph.adobe.io/api/YOUR_MESH_ID/graphql'
+const DEFAULT_MESH_ENDPOINT = 'https://graph.adobe.io/api/YOUR_MESH_ID/graphql'
 const METHOD_COLORS = {
   GET: '#12805C',
   POST: '#1473E6',
@@ -17,426 +18,111 @@ const METHOD_COLORS = {
   DELETE: '#D7373F'
 }
 
-/* ─── Operation definitions (dynamically populated per master) ─── */
+/* ─── Operation templates (dynamically populated per master) ─── */
 function buildOperations (master, meta) {
   const m = master || 'your-master'
   const pk = meta?.primaryKey || 'id'
   const isPublic = meta?.visibility === 'public'
   const isCrud = meta?.crudEnabled === true
 
+  const schemaFields = (meta?.schema || []).filter(f => f.name !== pk)
+  const editableFields = schemaFields.filter(f => f.editable !== false)
+  const queryableFields = schemaFields.filter(f => f.queryable)
+
+  function buildSampleJson (fieldList, prefix) {
+    if (!fieldList || fieldList.length === 0) return '{\\"field1\\":\\"value1\\"}'
+    return '{' + fieldList.map(f => {
+      const val = prefix ? `${prefix} ${f.name}` : `sample_${f.name}`
+      if (f.type === 'number' || f.type === 'integer') return `\\"${f.name}\\":0`
+      if (f.type === 'boolean') return `\\"${f.name}\\":true`
+      return `\\"${f.name}\\":\\"${val}\\"`
+    }).join(',') + '}'
+  }
+
+  const filterSample = queryableFields.length > 0
+    ? queryableFields.slice(0, 2).map(f => `${f.name}=value`).join(',')
+    : 'status=active'
+
   const queries = [
     {
-      id: 'query-all',
-      name: 'Query All Records',
-      group: 'Queries',
-      method: 'POST',
-      httpMethod: 'GET',
-      description: 'Paginated list of all records with optional filters, sorting, and field selection.',
-      graphql: `query {
-  mdmQuery(master: "${m}", page: 1, pageSize: 25) {
-    master
-    count
-    page
-    pageSize
-    total
-    data
-  }
-}`,
-      variables: null
+      id: 'query-all', name: 'Query All Records', group: 'Queries', method: 'GET',
+      graphql: `query {\n  mdmQuery(master: "${m}", page: 1, pageSize: 25) {\n    master\n    count\n    page\n    pageSize\n    total\n    data\n  }\n}`
     },
     {
-      id: 'query-filter',
-      name: 'Query with Filters',
-      group: 'Queries',
-      method: 'POST',
-      httpMethod: 'GET',
-      description: 'Filter records by field values. Use comma-separated key=value pairs. Filters combine with AND logic.',
-      graphql: `query {
-  mdmQuery(
-    master: "${m}"
-    filters: "status=active,brand=Nike"
-    sort: "${pk}"
-    order: "asc"
-    fields: "${pk},name"
-    page: 1
-    pageSize: 25
-  ) {
-    master
-    count
-    page
-    pageSize
-    total
-    data
-    aggregations {
-      field
-      label
-      values { value count }
-    }
-  }
-}`,
-      variables: null,
-      notes: 'Filters use key=value format, separated by commas. Example: "status=active,brand=Nike"'
+      id: 'query-filter', name: 'Query with Filters', group: 'Queries', method: 'GET',
+      graphql: `query {\n  mdmQuery(\n    master: "${m}"\n    filters: "${filterSample}"\n    sort: "${pk}"\n    order: "asc"\n    page: 1\n    pageSize: 25\n  ) {\n    master\n    count\n    page\n    pageSize\n    total\n    data\n    aggregations {\n      field\n      label\n      values { value count }\n    }\n  }\n}`
     },
     {
-      id: 'query-facets',
-      name: 'Query with Facets',
-      group: 'Queries',
-      method: 'POST',
-      httpMethod: 'GET',
-      description: 'Include aggregation/facet data in the response for faceted navigation.',
-      graphql: `query {
-  mdmQuery(
-    master: "${m}"
-    facets: "true"
-    page: 1
-    pageSize: 25
-  ) {
-    master
-    count
-    page
-    pageSize
-    total
-    data
-    aggregations {
-      field
-      label
-      type
-      showCount
-      collapsed
-      values { value count selected }
-    }
-  }
-}`,
-      variables: null
+      id: 'query-facets', name: 'Query with Facets', group: 'Queries', method: 'GET',
+      graphql: `query {\n  mdmQuery(\n    master: "${m}"\n    facets: "true"\n    page: 1\n    pageSize: 25\n  ) {\n    master\n    count\n    page\n    pageSize\n    total\n    data\n    aggregations {\n      field\n      label\n      type\n      showCount\n      collapsed\n      values { value count selected }\n    }\n  }\n}`
     },
     {
-      id: 'record-single',
-      name: 'Get Single Record',
-      group: 'Queries',
-      method: 'POST',
-      httpMethod: 'GET',
-      description: `Fetch a single record by its primary key (${pk}).`,
-      graphql: `query {
-  mdmRecord(master: "${m}", id: "RECORD_ID") {
-    master
-    data
-  }
-}`,
-      variables: null
+      id: 'record-single', name: 'Get Single Record', group: 'Queries', method: 'GET',
+      graphql: `query {\n  mdmRecord(master: "${m}", id: "1") {\n    master\n    data\n  }\n}`
     },
     {
-      id: 'bulk-fetch',
-      name: 'Bulk Fetch by IDs',
-      group: 'Queries',
-      method: 'POST',
-      httpMethod: 'GET',
-      description: 'Fetch multiple records by comma-separated IDs in a single call.',
-      graphql: `query {
-  mdmBulkFetch(master: "${m}", ids: "ID1,ID2,ID3") {
-    master
-    count
-    requested
-    data
-    notFound
-  }
-}`,
-      variables: null
+      id: 'bulk-fetch', name: 'Bulk Fetch by IDs', group: 'Queries', method: 'GET',
+      graphql: `query {\n  mdmBulkFetch(master: "${m}", ids: "1,2,3") {\n    master\n    count\n    requested\n    data\n    notFound\n  }\n}`
     },
     {
-      id: 'facets-config',
-      name: 'Get Facets Configuration',
-      group: 'Queries',
-      method: 'POST',
-      httpMethod: 'GET',
-      description: 'Retrieve facet metadata and optionally live aggregated values for faceted search UIs.',
-      graphql: `query {
-  mdmFacets(master: "${m}", values: "true") {
-    master
-    facetsEnabled
-    totalFields
-    facetableFields
-    totalRecords
-    facets {
-      field
-      label
-      type
-      sortBy
-      sortOrder
-      limit
-      showCount
-      collapsed
-      fieldType
-      values { value count }
-      totalValues
-    }
-  }
-}`,
-      variables: null
+      id: 'facets-config', name: 'Get Facets Configuration', group: 'Queries', method: 'GET',
+      graphql: `query {\n  mdmFacets(master: "${m}", values: "true") {\n    master\n    facetsEnabled\n    totalFields\n    facetableFields\n    totalRecords\n    facets {\n      field\n      label\n      type\n      sortBy\n      sortOrder\n      limit\n      showCount\n      collapsed\n      fieldType\n      values { value count }\n      totalValues\n    }\n  }\n}`
     }
   ]
 
   const mutations = []
   if (isPublic && isCrud) {
+    const createSample = buildSampleJson(editableFields.slice(0, 5), '')
+    const updateSample = buildSampleJson(editableFields.slice(0, 5), 'Updated')
+    const patchSample = editableFields.length > 0 ? buildSampleJson(editableFields.slice(0, 2), 'Patched') : '{\\"name\\":\\"Patched Name\\"}'
+
     mutations.push(
       {
-        id: 'create-record',
-        name: 'Create Record',
-        group: 'Mutations',
-        method: 'POST',
-        httpMethod: 'POST',
-        description: `Create a new record. Must include the primary key field (${pk}). Requires x-partner-id and x-partner-key headers.`,
-        graphql: `mutation {
-  mdmCreate(
-    master: "${m}"
-    data: "{\\"${pk}\\":\\"NEW-001\\",\\"name\\":\\"New Record\\"}"
-  ) {
-    success
-    master
-    operation
-    record
-    error
-  }
-}`,
-        variables: null,
-        requiresAuth: true
+        id: 'create-record', name: 'Create Record', group: 'Mutations', method: 'POST', requiresAuth: true,
+        graphql: `mutation {\n  mdmCreate(\n    master: "${m}"\n    input: { data: "${createSample}" }\n  ) {\n    success\n    master\n    operation\n    record\n    error\n  }\n}`
       },
       {
-        id: 'update-record',
-        name: 'Update Record (Full)',
-        group: 'Mutations',
-        method: 'POST',
-        httpMethod: 'PUT',
-        description: 'Full replacement of an existing record. All fields in data replace the existing record. Requires partner auth headers.',
-        graphql: `mutation {
-  mdmUpdate(
-    master: "${m}"
-    id: "RECORD_ID"
-    data: "{\\"${pk}\\":\\"RECORD_ID\\",\\"name\\":\\"Updated Record\\"}"
-  ) {
-    success
-    master
-    operation
-    record
-    error
-  }
-}`,
-        variables: null,
-        requiresAuth: true
+        id: 'update-record', name: 'Update Record (Full)', group: 'Mutations', method: 'POST', requiresAuth: true,
+        graphql: `mutation {\n  mdmUpdate(\n    master: "${m}"\n    id: "RECORD_ID"\n    input: { data: "${updateSample}" }\n  ) {\n    success\n    master\n    operation\n    record\n    error\n  }\n}`
       },
       {
-        id: 'patch-record',
-        name: 'Patch Record (Partial)',
-        group: 'Mutations',
-        method: 'POST',
-        httpMethod: 'PATCH',
-        description: 'Partial update — only provided fields are merged into the existing record. Requires partner auth headers.',
-        graphql: `mutation {
-  mdmPatch(
-    master: "${m}"
-    id: "RECORD_ID"
-    data: "{\\"name\\":\\"Patched Name\\"}"
-  ) {
-    success
-    master
-    operation
-    record
-    error
-  }
-}`,
-        variables: null,
-        requiresAuth: true
+        id: 'patch-record', name: 'Patch Record (Partial)', group: 'Mutations', method: 'POST', requiresAuth: true,
+        graphql: `mutation {\n  mdmPatch(\n    master: "${m}"\n    id: "RECORD_ID"\n    input: { data: "${patchSample}" }\n  ) {\n    success\n    master\n    operation\n    record\n    error\n  }\n}`
       },
       {
-        id: 'delete-record',
-        name: 'Delete Record',
-        group: 'Mutations',
-        method: 'POST',
-        httpMethod: 'DELETE',
-        description: 'Soft-delete a record by primary key. Requires partner auth headers.',
-        graphql: `mutation {
-  mdmDelete(master: "${m}", id: "RECORD_ID") {
-    success
-    master
-    operation
-    id
-    error
-  }
-}`,
-        variables: null,
-        requiresAuth: true
+        id: 'delete-record', name: 'Delete Record', group: 'Mutations', method: 'POST', requiresAuth: true,
+        graphql: `mutation {\n  mdmDelete(master: "${m}", id: "RECORD_ID") {\n    success\n    master\n    operation\n    id\n    error\n  }\n}`
       }
     )
   }
 
   const bulkOps = []
   if (isPublic && isCrud) {
+    const bulkSample1 = buildSampleJson(editableFields.slice(0, 3), 'Rec1')
+    const bulkSample2 = buildSampleJson(editableFields.slice(0, 3), 'Rec2')
+    const bulkField = editableFields.length > 0 ? editableFields[0].name : 'name'
+
     bulkOps.push(
       {
-        id: 'bulk-create',
-        name: 'Bulk Create',
-        group: 'Bulk Operations',
-        method: 'POST',
-        httpMethod: 'POST',
-        description: 'Create multiple records in a single call. Send a JSON array of record objects. Requires partner auth headers.',
-        graphql: `mutation {
-  mdmBulkCreate(
-    master: "${m}"
-    data: "[{\\"${pk}\\":\\"B1\\",\\"name\\":\\"Rec 1\\"},{\\"${pk}\\":\\"B2\\",\\"name\\":\\"Rec 2\\"}]"
-  ) {
-    master
-    operation
-    total
-    succeeded
-    failed
-    results {
-      success
-      id
-      error
-    }
-  }
-}`,
-        variables: null,
-        requiresAuth: true
+        id: 'bulk-create', name: 'Bulk Create', group: 'Bulk Operations', method: 'POST', requiresAuth: true,
+        graphql: `mutation {\n  mdmBulkCreate(\n    master: "${m}"\n    input: { data: "[${bulkSample1},${bulkSample2}]" }\n  ) {\n    master\n    operation\n    total\n    succeeded\n    failed\n    results {\n      success\n      id\n      error\n    }\n  }\n}`
       },
       {
-        id: 'bulk-update',
-        name: 'Bulk Update',
-        group: 'Bulk Operations',
-        method: 'POST',
-        httpMethod: 'PUT',
-        description: 'Full replacement of multiple records. Each item must have "id" and "data" fields. Requires partner auth headers.',
-        graphql: `mutation {
-  mdmBulkUpdate(
-    master: "${m}"
-    data: "[{\\"id\\":\\"REC1\\",\\"data\\":{\\"name\\":\\"Updated 1\\"}},{\\"id\\":\\"REC2\\",\\"data\\":{\\"name\\":\\"Updated 2\\"}}]"
-  ) {
-    master
-    operation
-    total
-    succeeded
-    failed
-    results {
-      success
-      id
-      error
-    }
-  }
-}`,
-        variables: null,
-        requiresAuth: true
+        id: 'bulk-update', name: 'Bulk Update', group: 'Bulk Operations', method: 'POST', requiresAuth: true,
+        graphql: `mutation {\n  mdmBulkUpdate(\n    master: "${m}"\n    input: { data: "[{\\"id\\":\\"1\\",\\"data\\":{\\"${bulkField}\\":\\"Updated 1\\"}},{\\"id\\":\\"2\\",\\"data\\":{\\"${bulkField}\\":\\"Updated 2\\"}}]" }\n  ) {\n    master\n    operation\n    total\n    succeeded\n    failed\n    results {\n      success\n      id\n      error\n    }\n  }\n}`
       },
       {
-        id: 'bulk-patch',
-        name: 'Bulk Patch',
-        group: 'Bulk Operations',
-        method: 'POST',
-        httpMethod: 'PATCH',
-        description: 'Partial update of multiple records. Each item must have "id" and "data" fields. Only provided fields are merged. Requires partner auth headers.',
-        graphql: `mutation {
-  mdmBulkPatch(
-    master: "${m}"
-    data: "[{\\"id\\":\\"REC1\\",\\"data\\":{\\"name\\":\\"Patched 1\\"}}]"
-  ) {
-    master
-    operation
-    total
-    succeeded
-    failed
-    results {
-      success
-      id
-      error
-    }
-  }
-}`,
-        variables: null,
-        requiresAuth: true
+        id: 'bulk-patch', name: 'Bulk Patch', group: 'Bulk Operations', method: 'POST', requiresAuth: true,
+        graphql: `mutation {\n  mdmBulkPatch(\n    master: "${m}"\n    input: { data: "[{\\"id\\":\\"1\\",\\"data\\":{\\"${bulkField}\\":\\"Patched 1\\"}}]" }\n  ) {\n    master\n    operation\n    total\n    succeeded\n    failed\n    results {\n      success\n      id\n      error\n    }\n  }\n}`
       },
       {
-        id: 'bulk-delete',
-        name: 'Bulk Delete',
-        group: 'Bulk Operations',
-        method: 'POST',
-        httpMethod: 'DELETE',
-        description: 'Delete multiple records by IDs. Send a JSON array of ID strings. Requires partner auth headers.',
-        graphql: `mutation {
-  mdmBulkDelete(
-    master: "${m}"
-    data: "[\\"REC1\\",\\"REC2\\"]"
-  ) {
-    master
-    operation
-    total
-    succeeded
-    failed
-    results {
-      success
-      id
-      error
-    }
-  }
-}`,
-        variables: null,
-        requiresAuth: true
+        id: 'bulk-delete', name: 'Bulk Delete', group: 'Bulk Operations', method: 'POST', requiresAuth: true,
+        graphql: `mutation {\n  mdmBulkDelete(\n    master: "${m}"\n    input: { data: "[\\"1\\",\\"2\\"]" }\n  ) {\n    master\n    operation\n    total\n    succeeded\n    failed\n    results {\n      success\n      id\n      error\n    }\n  }\n}`
       }
     )
   }
 
   return [...queries, ...mutations, ...bulkOps]
-}
-
-/* ─── Code generators ─── */
-function toCurl (op) {
-  const headers = [
-    '-H "Content-Type: application/json"'
-  ]
-  if (op.requiresAuth) {
-    headers.push('-H "x-partner-id: YOUR_PARTNER_ID"')
-    headers.push('-H "x-partner-key: YOUR_PARTNER_KEY"')
-  }
-  const body = JSON.stringify({ query: op.graphql })
-  return `curl -X POST '${MESH_ENDPOINT}' \\
-  ${headers.join(' \\\n  ')} \\
-  -d '${body}'`
-}
-
-function toFetchJs (op) {
-  const headersObj = { 'Content-Type': 'application/json' }
-  if (op.requiresAuth) {
-    headersObj['x-partner-id'] = 'YOUR_PARTNER_ID'
-    headersObj['x-partner-key'] = 'YOUR_PARTNER_KEY'
-  }
-  // Double-escape backslashes so template literal preserves \"  for GraphQL
-  const safeGraphql = op.graphql.replace(/\\/g, '\\\\')
-  return `const response = await fetch('${MESH_ENDPOINT}', {
-  method: 'POST',
-  headers: ${JSON.stringify(headersObj, null, 4)},
-  body: JSON.stringify({
-    query: \`${safeGraphql}\`
-  })
-});
-
-const data = await response.json();
-console.log(data);`
-}
-
-function toPythonReq (op) {
-  const headers = { 'Content-Type': 'application/json' }
-  if (op.requiresAuth) {
-    headers['x-partner-id'] = 'YOUR_PARTNER_ID'
-    headers['x-partner-key'] = 'YOUR_PARTNER_KEY'
-  }
-  // Double-escape backslashes so Python triple-quotes preserve \" for GraphQL
-  const safeGraphql = op.graphql.replace(/\\/g, '\\\\')
-  return `import requests
-
-url = "${MESH_ENDPOINT}"
-headers = ${JSON.stringify(headers, null, 4)}
-
-query = """${safeGraphql}"""
-
-response = requests.post(url, json={"query": query}, headers=headers)
-print(response.json())`
 }
 
 /* ─── MethodBadge ─── */
@@ -449,40 +135,30 @@ function MethodBadge ({ method }) {
 }
 
 /* ─── CopyButton ─── */
-function CopyBtn ({ text, notify }) {
+function CopyBtn ({ text, label, notify }) {
   const [copied, setCopied] = useState(false)
   function handleCopy () {
     navigator.clipboard.writeText(text)
     setCopied(true)
-    notify.info('Copied to clipboard')
+    if (notify) notify.info('Copied to clipboard')
     setTimeout(() => setCopied(false), 2000)
   }
   return (
     <button className='qc-copy-btn' onClick={handleCopy} title='Copy to clipboard'>
-      {copied ? '✓ Copied' : 'Copy'}
+      {copied ? '✓ Copied' : (label || 'Copy')}
     </button>
   )
 }
 
-/* ─── Tab component ─── */
-function CodeTabs ({ tabs, notify }) {
-  const [active, setActive] = useState(tabs[0]?.key || '')
-  const current = tabs.find(t => t.key === active) || tabs[0]
+/* ─── Header row (key/value editable pair) ─── */
+function HeaderRow ({ header, onChange, onRemove }) {
   return (
-    <div className='qc-code-tabs'>
-      <div className='qc-code-tabs__bar'>
-        <div className='qc-code-tabs__labels'>
-          {tabs.map(t => (
-            <button key={t.key} className={`qc-code-tabs__tab ${active === t.key ? 'qc-code-tabs__tab--active' : ''}`}
-              onClick={() => setActive(t.key)}>
-              {t.icon && <span className='qc-code-tabs__icon'>{t.icon}</span>}
-              {t.label}
-            </button>
-          ))}
-        </div>
-        <CopyBtn text={current?.code || ''} notify={notify} />
-      </div>
-      <pre className='qc-code-tabs__content'>{current?.code || ''}</pre>
+    <div className='qc-header-row'>
+      <input className='qc-header-row__key' value={header.key} placeholder='Header name'
+        onChange={e => onChange({ ...header, key: e.target.value })} />
+      <input className='qc-header-row__value' value={header.value} placeholder='Value'
+        onChange={e => onChange({ ...header, value: e.target.value })} />
+      <button className='qc-header-row__remove' onClick={onRemove} title='Remove header'>×</button>
     </div>
   )
 }
@@ -493,69 +169,76 @@ function QueryConsole ({ runtime, ims }) {
   const [masters, setMasters] = useState([])
   const [mastersLoading, setMastersLoading] = useState(true)
   const [masterMeta, setMasterMeta] = useState(null)
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState(null)
 
-  // Query params
+  // Master selection
   const [selectedMaster, setSelectedMaster] = useState('')
-  const [filterStr, setFilterStr] = useState('')
-  const [sortField, setSortField] = useState('')
-  const [sortOrder, setSortOrder] = useState('asc')
-  const [fields, setFields] = useState('')
-  const [page, setPage] = useState(1)
-  const [pageSize, setPageSize] = useState(25)
-  const [recordId, setRecordId] = useState('')
 
-  // Operation selection
+  // Operation sidebar
   const [activeOp, setActiveOp] = useState('query-all')
   const [collapsedGroups, setCollapsedGroups] = useState({})
 
-  // Result
-  const [result, setResult] = useState(null)
+  // Request editor state
+  const [endpoint, setEndpoint] = useState(() => localStorage.getItem('qc_endpoint') || DEFAULT_MESH_ENDPOINT)
+  const [headers, setHeaders] = useState(() => {
+    try {
+      const saved = localStorage.getItem('qc_headers')
+      if (saved) return JSON.parse(saved)
+    } catch (_) {}
+    return [
+      { key: 'Content-Type', value: 'application/json' },
+      { key: 'x-partner-id', value: '' },
+      { key: 'x-partner-key', value: '' }
+    ]
+  })
+  const [graphqlBody, setGraphqlBody] = useState('')
+  const [variablesBody, setVariablesBody] = useState('')
 
+  // Tabs
+  const [requestTab, setRequestTab] = useState('query') // query | headers | variables
+
+  // Execution state
+  const [sending, setSending] = useState(false)
+  const [response, setResponse] = useState(null) // { status, statusText, time, size, headers, body }
+  const [responseTab, setResponseTab] = useState('body') // body | headers
+
+  // Persist endpoint + headers
+  useEffect(() => { localStorage.setItem('qc_endpoint', endpoint) }, [endpoint])
+  useEffect(() => { localStorage.setItem('qc_headers', JSON.stringify(headers)) }, [headers])
+
+  // Load masters
   useEffect(() => {
-    loadMasters()
     ;(async () => {
       try {
-        const r = await invokeAction('app-settings', {}, ims, 'GET')
-        const defaultPs = r?.settings?.api?.defaultPageSize
-        if (defaultPs) setPageSize(defaultPs)
-      } catch (_) { /* keep default */ }
+        setMastersLoading(true)
+        const res = await fetchFileList(ims)
+        setMasters(res.files || [])
+      } catch (e) {
+        console.error('Failed to load masters', e)
+      } finally {
+        setMastersLoading(false)
+      }
     })()
   }, [])
 
+  // Load master detail on selection change
   useEffect(() => {
     if (selectedMaster) {
-      loadMasterDetail(selectedMaster)
+      ;(async () => {
+        try {
+          const res = await fetchFileDetail(selectedMaster, ims)
+          setMasterMeta(res.file || null)
+        } catch (e) {
+          console.error('Failed to load master detail', e)
+          const found = masters.find(m => (m.masterName || m.entityName) === selectedMaster)
+          setMasterMeta(found || null)
+        }
+      })()
     } else {
       setMasterMeta(null)
     }
   }, [selectedMaster])
 
-  async function loadMasters () {
-    try {
-      setMastersLoading(true)
-      const res = await fetchFileList(ims)
-      setMasters(res.files || [])
-    } catch (e) {
-      console.error('Failed to load masters', e)
-    } finally {
-      setMastersLoading(false)
-    }
-  }
-
-  async function loadMasterDetail (master) {
-    try {
-      const res = await fetchFileDetail(master, ims)
-      setMasterMeta(res.file || null)
-    } catch (e) {
-      console.error('Failed to load master detail', e)
-      // Build minimal meta from list data
-      const found = masters.find(m => (m.masterName || m.entityName) === master)
-      setMasterMeta(found || null)
-    }
-  }
-
+  // Build operations list
   const operations = useMemo(() => {
     if (!selectedMaster) return []
     return buildOperations(selectedMaster, masterMeta)
@@ -572,67 +255,151 @@ function QueryConsole ({ runtime, ims }) {
     return groups
   }, [operations])
 
-  // When master changes, reset to first operation
+  // When operations change, select the first and populate the editor
   useEffect(() => {
     if (operations.length > 0 && !operations.find(o => o.id === activeOp)) {
-      setActiveOp(operations[0].id)
+      const first = operations[0]
+      setActiveOp(first.id)
+      setGraphqlBody(first.graphql)
+      setVariablesBody('')
     }
   }, [operations])
 
-  async function handleQuery () {
-    if (!selectedMaster) return
-    try {
-      setLoading(true)
-      setError(null)
-      const queryParams = {}
-      if (recordId) queryParams.id = recordId
-      if (filterStr) queryParams.filter = filterStr
-      if (sortField) queryParams.sort = sortField
-      if (sortOrder) queryParams.order = sortOrder
-      if (fields) queryParams.fields = fields
-      if (page) queryParams.page = page
-      if (pageSize) queryParams.pageSize = pageSize
-
-      const res = await queryData(selectedMaster, queryParams, ims)
-      setResult(res)
-      notify.success(`Query returned ${res.count || 0} records`)
-    } catch (e) {
-      setError(e.message)
-      setResult(null)
-      notify.error(e.message)
-    } finally {
-      setLoading(false)
+  // When user clicks a different operation, populate the editor
+  function selectOperation (opId) {
+    setActiveOp(opId)
+    const op = operations.find(o => o.id === opId)
+    if (op) {
+      setGraphqlBody(op.graphql)
+      setVariablesBody('')
+      setResponse(null)
     }
+  }
+
+  // --- Send GraphQL request ---
+  const handleSend = useCallback(async () => {
+    if (!endpoint || !graphqlBody.trim()) {
+      notify.error('Endpoint and query are required')
+      return
+    }
+    setSending(true)
+    setResponse(null)
+
+    const reqHeaders = {}
+    headers.forEach(h => {
+      if (h.key && h.value) reqHeaders[h.key] = h.value
+    })
+
+    let bodyObj
+    try {
+      bodyObj = { query: graphqlBody }
+      if (variablesBody.trim()) {
+        bodyObj.variables = JSON.parse(variablesBody)
+      }
+    } catch (e) {
+      notify.error('Invalid JSON in variables: ' + e.message)
+      setSending(false)
+      return
+    }
+
+    const start = performance.now()
+    try {
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: reqHeaders,
+        body: JSON.stringify(bodyObj)
+      })
+      const elapsed = Math.round(performance.now() - start)
+      const text = await res.text()
+      let parsed
+      try { parsed = JSON.parse(text) } catch (_) { parsed = null }
+
+      const respHeaders = {}
+      res.headers.forEach((v, k) => { respHeaders[k] = v })
+
+      setResponse({
+        status: res.status,
+        statusText: res.statusText,
+        time: elapsed,
+        size: text.length,
+        headers: respHeaders,
+        body: parsed ? JSON.stringify(parsed, null, 2) : text,
+        isError: res.status >= 400
+      })
+
+      if (res.ok) {
+        notify.success(`${res.status} ${res.statusText} — ${elapsed}ms`)
+      } else {
+        notify.error(`${res.status} ${res.statusText}`)
+      }
+    } catch (e) {
+      const elapsed = Math.round(performance.now() - start)
+      setResponse({
+        status: 0,
+        statusText: 'Network Error',
+        time: elapsed,
+        size: 0,
+        headers: {},
+        body: e.message || 'Failed to connect to endpoint',
+        isError: true
+      })
+      notify.error('Request failed: ' + e.message)
+    } finally {
+      setSending(false)
+    }
+  }, [endpoint, graphqlBody, variablesBody, headers, notify])
+
+  // Header management
+  function updateHeader (index, header) {
+    setHeaders(prev => prev.map((h, i) => i === index ? header : h))
+  }
+  function removeHeader (index) {
+    setHeaders(prev => prev.filter((_, i) => i !== index))
+  }
+  function addHeader () {
+    setHeaders(prev => [...prev, { key: '', value: '' }])
   }
 
   function toggleGroup (group) {
     setCollapsedGroups(prev => ({ ...prev, [group]: !prev[group] }))
   }
 
-  const groupIcons = {
-    Queries: '🔍',
-    Mutations: '✏️',
-    'Bulk Operations': '📦'
-  }
+  const groupIcons = { Queries: '🔍', Mutations: '✏️', 'Bulk Operations': '📦' }
+
+  // Keyboard shortcut: Ctrl/Cmd + Enter to send
+  useEffect(() => {
+    function handleKeyDown (e) {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+        e.preventDefault()
+        handleSend()
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [handleSend])
+
+  const activeHeaderCount = headers.filter(h => h.key && h.value).length
 
   return (
     <View UNSAFE_className='mdm-page'>
       <Flex justifyContent='space-between' alignItems='center' marginBottom='size-300'>
         <View>
-          <Heading level={1} UNSAFE_className='mdm-page__title'>Query Console</Heading>
-          <Text UNSAFE_className='mdm-page__subtitle'>Explore, test, and generate API Mesh integration code for any master</Text>
+          <Heading level={1} UNSAFE_className='mdm-page__title'>API Client</Heading>
+          <Text UNSAFE_className='mdm-page__subtitle'>Send GraphQL queries and mutations to your API Mesh endpoint</Text>
         </View>
       </Flex>
 
-      {/* Master Selector */}
+      {/* Master Selector + Schema */}
       <View UNSAFE_className='mdm-card' marginBottom='size-300'>
         <Flex gap='size-200' alignItems='end' wrap>
-          <Picker label='Select Master' selectedKey={selectedMaster} onSelectionChange={k => { setSelectedMaster(k); setResult(null); setError(null) }}
-            isRequired width='size-3600' placeholder='Choose a master...'>
+          <Picker label='Select Master' selectedKey={selectedMaster}
+            onSelectionChange={k => { setSelectedMaster(k); setResponse(null) }}
+            isRequired width='size-3600' placeholder='Choose a master...'
+            isLoading={mastersLoading}>
             {masters.map(e => <Item key={e.masterName || e.entityName}>{e.displayName || e.masterName || e.entityName}</Item>)}
           </Picker>
           {masterMeta && (
-            <Flex gap='size-150' alignItems='center' UNSAFE_style={{ paddingBottom: 4 }}>
+            <Flex gap='size-150' alignItems='center' UNSAFE_style={{ paddingBottom: 4 }} wrap>
               <span className='qc-meta-chip'>
                 <span className='qc-meta-chip__label'>Primary Key</span>
                 <span className='qc-meta-chip__value'>{masterMeta.primaryKey || '—'}</span>
@@ -640,18 +407,40 @@ function QueryConsole ({ runtime, ims }) {
               <span className={`qc-meta-chip ${masterMeta.visibility === 'public' ? 'qc-meta-chip--green' : 'qc-meta-chip--orange'}`}>
                 {masterMeta.visibility || 'private'}
               </span>
-              {masterMeta.crudEnabled && (
-                <span className='qc-meta-chip qc-meta-chip--blue'>CRUD Enabled</span>
-              )}
+              {masterMeta.crudEnabled && <span className='qc-meta-chip qc-meta-chip--blue'>CRUD Enabled</span>}
               {masterMeta.recordCount !== undefined && (
                 <span className='qc-meta-chip'>
                   <span className='qc-meta-chip__label'>Records</span>
                   <span className='qc-meta-chip__value'>{Number(masterMeta.recordCount).toLocaleString()}</span>
                 </span>
               )}
+              {masterMeta.schema && (
+                <span className='qc-meta-chip'>
+                  <span className='qc-meta-chip__label'>Fields</span>
+                  <span className='qc-meta-chip__value'>{masterMeta.schema.length}</span>
+                </span>
+              )}
             </Flex>
           )}
         </Flex>
+        {masterMeta?.schema && masterMeta.schema.length > 0 && (
+          <View marginTop='size-150'>
+            <Text UNSAFE_style={{ fontSize: '12px', color: 'var(--spectrum-global-color-gray-600)' }}>
+              <strong>Schema:</strong>{' '}
+              {masterMeta.schema.map((f, i) => (
+                <span key={f.name}>
+                  <code style={{ fontSize: '11px', background: 'var(--spectrum-global-color-gray-100)', padding: '1px 4px', borderRadius: '3px' }}>
+                    {f.name}
+                  </code>
+                  {f.name === masterMeta.primaryKey && <span style={{ fontSize: '9px', color: '#B7791F', fontWeight: 700, marginLeft: 2 }}>PK</span>}
+                  {f.required && <span style={{ fontSize: '9px', color: '#C53030', marginLeft: 2 }}>*</span>}
+                  {f.queryable && <span style={{ fontSize: '9px', color: '#2B6CB0', fontWeight: 700, marginLeft: 2 }}>Q</span>}
+                  {i < masterMeta.schema.length - 1 ? ' ' : ''}
+                </span>
+              ))}
+            </Text>
+          </View>
+        )}
       </View>
 
       {selectedMaster && (
@@ -673,8 +462,8 @@ function QueryConsole ({ runtime, ims }) {
                   </button>
                   {!collapsedGroups[group] && ops.map(op => (
                     <button key={op.id} className={`qc-sidebar__item ${activeOp === op.id ? 'qc-sidebar__item--active' : ''}`}
-                      onClick={() => setActiveOp(op.id)}>
-                      <MethodBadge method={op.httpMethod} />
+                      onClick={() => selectOperation(op.id)}>
+                      <MethodBadge method={op.method} />
                       <span className='qc-sidebar__item-name'>{op.name}</span>
                     </button>
                   ))}
@@ -683,129 +472,107 @@ function QueryConsole ({ runtime, ims }) {
             </div>
           </div>
 
-          {/* Right: Operation Detail */}
+          {/* Right: Request + Response */}
           <div className='qc-detail'>
-            {currentOp && (
-              <>
-                {/* Operation Header */}
-                <div className='qc-detail__header'>
-                  <div className='qc-detail__header-top'>
-                    <MethodBadge method={currentOp.httpMethod} />
-                    <h3 className='qc-detail__title'>{currentOp.name}</h3>
+            {/* Endpoint Bar (editable) */}
+            <div className='qc-endpoint-bar'>
+              <span className='qc-endpoint-bar__method'>POST</span>
+              <input className='qc-endpoint-bar__input' value={endpoint}
+                onChange={e => setEndpoint(e.target.value)}
+                placeholder='https://graph.adobe.io/api/YOUR_MESH_ID/graphql'
+                spellCheck={false} />
+              <button className={`qc-send-btn ${sending ? 'qc-send-btn--sending' : ''}`}
+                onClick={handleSend} disabled={sending}>
+                {sending ? 'Sending…' : 'Send'}
+              </button>
+            </div>
+
+            {/* Request section: tabs for Query / Headers / Variables */}
+            <div className='qc-request-panel'>
+              <div className='qc-request-panel__tabs'>
+                <button className={`qc-request-panel__tab ${requestTab === 'query' ? 'qc-request-panel__tab--active' : ''}`}
+                  onClick={() => setRequestTab('query')}>
+                  Query
+                </button>
+                <button className={`qc-request-panel__tab ${requestTab === 'headers' ? 'qc-request-panel__tab--active' : ''}`}
+                  onClick={() => setRequestTab('headers')}>
+                  Headers {activeHeaderCount > 0 && <span className='qc-request-panel__badge'>{activeHeaderCount}</span>}
+                </button>
+                <button className={`qc-request-panel__tab ${requestTab === 'variables' ? 'qc-request-panel__tab--active' : ''}`}
+                  onClick={() => setRequestTab('variables')}>
+                  Variables
+                </button>
+                <div className='qc-request-panel__spacer' />
+                <span className='qc-request-panel__hint'>⌘ Enter to send</span>
+              </div>
+
+              <div className='qc-request-panel__body'>
+                {requestTab === 'query' && (
+                  <textarea className='qc-editor' value={graphqlBody}
+                    onChange={e => setGraphqlBody(e.target.value)}
+                    placeholder='Enter your GraphQL query or mutation here…'
+                    spellCheck={false} />
+                )}
+                {requestTab === 'headers' && (
+                  <div className='qc-headers-editor'>
+                    {headers.map((h, i) => (
+                      <HeaderRow key={i} header={h} onChange={hdr => updateHeader(i, hdr)}
+                        onRemove={() => removeHeader(i)} />
+                    ))}
+                    <button className='qc-headers-editor__add' onClick={addHeader}>
+                      + Add Header
+                    </button>
                   </div>
-                  <p className='qc-detail__desc'>{currentOp.description}</p>
-                  {currentOp.notes && (
-                    <div className='qc-info-notice'>
-                      <span className='qc-info-notice__icon'>💡</span>
-                      <span>{currentOp.notes}</span>
-                    </div>
-                  )}
-                  {currentOp.requiresAuth && (
-                    <div className='qc-auth-notice'>
-                      <span className='qc-auth-notice__icon'>🔐</span>
-                      <span>Requires <code>x-partner-id</code> and <code>x-partner-key</code> headers for authentication</span>
-                    </div>
-                  )}
+                )}
+                {requestTab === 'variables' && (
+                  <textarea className='qc-editor qc-editor--short' value={variablesBody}
+                    onChange={e => setVariablesBody(e.target.value)}
+                    placeholder='{\n  "variableName": "value"\n}'
+                    spellCheck={false} />
+                )}
+              </div>
+            </div>
+
+            {/* Response section */}
+            {response && (
+              <div className='qc-response'>
+                <div className='qc-response__header'>
+                  <div className='qc-response__header-left'>
+                    <span className={`qc-response__status ${response.isError ? 'qc-response__status--error' : 'qc-response__status--ok'}`}>
+                      {response.status === 0 ? 'ERR' : response.status} {response.statusText}
+                    </span>
+                    <span className='qc-response__meta'>{response.time}ms</span>
+                    <span className='qc-response__meta'>
+                      {response.size > 1024 ? `${(response.size / 1024).toFixed(1)} KB` : `${response.size} B`}
+                    </span>
+                  </div>
+                  <div className='qc-response__header-right'>
+                    <button className={`qc-response__tab ${responseTab === 'body' ? 'qc-response__tab--active' : ''}`}
+                      onClick={() => setResponseTab('body')}>Body</button>
+                    <button className={`qc-response__tab ${responseTab === 'headers' ? 'qc-response__tab--active' : ''}`}
+                      onClick={() => setResponseTab('headers')}>Headers</button>
+                    <CopyBtn text={response.body} notify={notify} />
+                  </div>
                 </div>
-
-                {/* Endpoint */}
-                <div className='qc-endpoint-bar'>
-                  <span className='qc-endpoint-bar__method'>POST</span>
-                  <span className='qc-endpoint-bar__url'>{MESH_ENDPOINT}</span>
-                  <CopyBtn text={MESH_ENDPOINT} notify={notify} />
-                </div>
-
-                {/* Code Tabs */}
-                <CodeTabs notify={notify} tabs={[
-                  { key: 'graphql', label: 'GraphQL', icon: '◆', code: currentOp.graphql },
-                  { key: 'curl', label: 'cURL', icon: '⌘', code: toCurl(currentOp) },
-                  { key: 'javascript', label: 'JavaScript', icon: 'JS', code: toFetchJs(currentOp) },
-                  { key: 'python', label: 'Python', icon: '🐍', code: toPythonReq(currentOp) }
-                ]} />
-
-                {/* Live Query Builder — only for query-all and query-filter */}
-                {(currentOp.id === 'query-all' || currentOp.id === 'query-filter') && (
-                  <div className='qc-live-builder'>
-                    <div className='qc-live-builder__header'>
-                      <h4 className='qc-live-builder__title'>Live Query Builder</h4>
-                      <span className='qc-live-builder__hint'>Configure parameters and execute against the live backend</span>
-                    </div>
-                    <div className='qc-live-builder__form'>
-                      <TextField label='Record ID' value={recordId} onChange={setRecordId}
-                        placeholder='Leave empty for collection query' width='100%'
-                        description='Fetch a specific record by its primary key value' />
-
-                      <TextField label='Filters' value={filterStr} onChange={setFilterStr}
-                        placeholder='sku=ABC123&brand=Nike' width='100%'
-                        description='Format: field=value. Multiple filters joined with &' />
-
-                      <Flex gap='size-200' width='100%'>
-                        <TextField label='Sort Field' value={sortField} onChange={setSortField} flex={1}
-                          placeholder='e.g. name, price, createdAt' />
-                        <Picker label='Order' selectedKey={sortOrder} onSelectionChange={setSortOrder} width='size-1600'>
-                          <Item key='asc'>Ascending</Item>
-                          <Item key='desc'>Descending</Item>
-                        </Picker>
-                      </Flex>
-
-                      <TextField label='Fields (comma-separated)' value={fields} onChange={setFields}
-                        placeholder='name,sku,price' width='100%'
-                        description='Leave empty to return all fields' />
-
-                      <Flex gap='size-200' width='100%'>
-                        <TextField label='Page' value={String(page)} onChange={v => setPage(Number(v) || 1)} width='size-1200' />
-                        <TextField label='Page Size' value={String(pageSize)} onChange={v => setPageSize(Number(v) || 25)} width='size-1200' />
-                      </Flex>
-                    </div>
-
-                    <Flex marginTop='size-200' gap='size-100'>
-                      <Button variant='cta' onPress={handleQuery} isDisabled={!selectedMaster || loading}>
-                        <Code size='S' /><Text>{loading ? 'Executing...' : 'Execute Query'}</Text>
-                      </Button>
-                      {result && (
-                        <Button variant='secondary' isQuiet onPress={() => { setResult(null); setError(null) }}>
-                          <Text>Clear</Text>
-                        </Button>
-                      )}
-                    </Flex>
-                  </div>
-                )}
-
-                {/* Error */}
-                {error && (
-                  <div className='qc-error-bar'>
-                    <span className='qc-error-bar__icon'>⚠</span>
-                    <span>{error}</span>
-                  </div>
-                )}
-
-                {/* Response */}
-                {result && (
-                  <div className='qc-response'>
-                    <div className='qc-response__header'>
-                      <div className='qc-response__header-left'>
-                        <span className='qc-response__status qc-response__status--ok'>200 OK</span>
-                        <span className='qc-response__meta'>
-                          {result.count !== undefined && `${result.count} records`}
-                          {result.total !== undefined && ` of ${result.total} total`}
-                          {result.page !== undefined && ` · Page ${result.page}`}
-                        </span>
-                      </div>
-                      <div className='qc-response__header-right'>
-                        <span className='qc-response__size'>{(JSON.stringify(result).length / 1024).toFixed(1)} KB</span>
-                        <CopyBtn text={JSON.stringify(result, null, 2)} notify={notify} />
-                      </div>
-                    </div>
-                    <pre className='qc-response__body'>{JSON.stringify(result, null, 2)}</pre>
-                  </div>
-                )}
-              </>
+                <pre className='qc-response__body'>
+                  {responseTab === 'body'
+                    ? response.body
+                    : JSON.stringify(response.headers, null, 2)}
+                </pre>
+              </div>
             )}
 
-            {!currentOp && (
-              <div className='qc-empty'>
-                <span className='qc-empty__icon'>📋</span>
-                <p>Select an operation from the sidebar to view its details and code snippets</p>
+            {!response && !sending && (
+              <div className='qc-response-placeholder'>
+                <span className='qc-response-placeholder__icon'>⚡</span>
+                <p>Click <strong>Send</strong> or press <strong>⌘ Enter</strong> to execute the request</p>
+              </div>
+            )}
+
+            {sending && (
+              <div className='qc-response-placeholder'>
+                <span className='qc-response-placeholder__icon qc-response-placeholder__icon--spin'>⏳</span>
+                <p>Sending request…</p>
               </div>
             )}
           </div>
@@ -818,7 +585,7 @@ function QueryConsole ({ runtime, ims }) {
           <div className='qc-empty'>
             <span className='qc-empty__icon'>🚀</span>
             <h3>Select a Master to Get Started</h3>
-            <p className='qc-empty__text'>Choose a master from the picker above to explore all available API Mesh operations with ready-to-use code snippets in GraphQL, cURL, JavaScript, and Python.</p>
+            <p className='qc-empty__text'>Choose a master from the picker above to explore all available API operations. Select a template from the sidebar, edit the query, configure headers, and send live requests to your API Mesh endpoint.</p>
             <div className='qc-feature-grid'>
               <div className='qc-feature-card'>
                 <span className='qc-feature-card__icon'>🔍</span>
@@ -836,9 +603,9 @@ function QueryConsole ({ runtime, ims }) {
                 <span className='qc-feature-card__desc'>Process multiple records in a single API call</span>
               </div>
               <div className='qc-feature-card'>
-                <span className='qc-feature-card__icon'>📋</span>
-                <span className='qc-feature-card__label'>Copy & Integrate</span>
-                <span className='qc-feature-card__desc'>One-click copy for GraphQL, cURL, JS, and Python</span>
+                <span className='qc-feature-card__icon'>📡</span>
+                <span className='qc-feature-card__label'>Send Requests</span>
+                <span className='qc-feature-card__desc'>Execute live GraphQL requests with custom headers and endpoint</span>
               </div>
             </div>
           </div>

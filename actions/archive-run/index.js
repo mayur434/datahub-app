@@ -111,9 +111,8 @@ async function main (params) {
         const masterColName = getMasterCollectionName(entity.masterName)
         const masterCol = await client.collection(masterColName)
 
-        // Get current record count (JS-level filter for aio-lib-db quirks)
-        const allRecs = await masterCol.find({}).toArray()
-        const currentCount = allRecs.filter(r => r.deleted !== true).length
+        // Get current record count using DB-level countDocuments
+        const currentCount = await masterCol.countDocuments({ deleted: { $ne: true } })
 
         if (currentCount <= threshold) {
           logger.info(`Master '${entity.masterName}': ${currentCount}/${threshold} - below threshold, skipping`)
@@ -126,10 +125,11 @@ async function main (params) {
 
         logger.info(`Master '${entity.masterName}': ${currentCount} records, threshold ${threshold}, archiving ${recordsToArchive}`)
 
-        // Fetch oldest records to archive (sort by createdAt ascending = oldest first)
-        const activeRecords = allRecs.filter(r => r.deleted !== true)
-        activeRecords.sort((a, b) => (a.createdAt || '').localeCompare(b.createdAt || ''))
-        const oldRecords = activeRecords.slice(0, recordsToArchive)
+        // Fetch oldest records to archive using DB-level sort + limit (oldest first)
+        const oldRecords = await masterCol.find({ deleted: { $ne: true } })
+          .sort({ createdAt: 1 })
+          .limit(recordsToArchive)
+          .toArray()
 
         if (oldRecords.length === 0) continue
 
@@ -199,9 +199,8 @@ async function main (params) {
           })
         }
 
-        // Update master metadata
-        const remainingRecs = await masterCol.find({}).toArray()
-        const newCount = remainingRecs.filter(r => r.deleted !== true).length
+        // Update master metadata using countDocuments
+        const newCount = await masterCol.countDocuments({ deleted: { $ne: true } })
         const totalArchived = (archivalConfig.totalArchived || 0) + oldRecords.length
 
         await metaCol.updateOne(

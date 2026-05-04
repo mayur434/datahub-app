@@ -4,7 +4,7 @@ import {
   StatusLight, Divider, ActionButton
 } from '@adobe/react-spectrum'
 import { useNavigate } from 'react-router-dom'
-import { fetchDashboard, fetchFileList } from './actionInvoker'
+import { fetchDashboard } from './actionInvoker'
 import useSwrCache from './useSwrCache'
 import Refresh from '@spectrum-icons/workflow/Refresh'
 import Add from '@spectrum-icons/workflow/Add'
@@ -12,23 +12,19 @@ import Add from '@spectrum-icons/workflow/Add'
 function Dashboard ({ runtime, ims }) {
   const navigate = useNavigate()
 
-  // SWR cache for dashboard data — show stale instantly, revalidate in background
+  // Single SWR cache for dashboard — masters array is now included in the dashboard response
   const dashSwr = useSwrCache('dashboard', () => fetchDashboard(ims).catch(() => ({})), { ttl: 2 * 60 * 1000 })
-  const filesSwr = useSwrCache('file-list', () => fetchFileList(ims).then(r => r.files || []).catch(() => []), { ttl: 2 * 60 * 1000 })
 
   const stats = dashSwr.data ? (dashSwr.data.dashboard || dashSwr.data) : null
-  const files = Array.isArray(filesSwr.data) ? filesSwr.data : (filesSwr.data?.files || [])
+  const files = stats?.masters || []
   const loading = dashSwr.loading && !dashSwr.data
   const error = dashSwr.error && !dashSwr.data ? dashSwr.error : null
   const isCached = !!dashSwr.data?._cached
   const cachedAt = dashSwr.data?._cachedAt || null
-  const stale = dashSwr.stale || filesSwr.stale
+  const stale = dashSwr.stale
 
   async function refreshDashboard () {
-    await Promise.all([
-      dashSwr.refresh(),
-      filesSwr.refresh()
-    ])
+    await dashSwr.refresh()
   }
 
   if (loading && !stats) {
@@ -231,7 +227,7 @@ function Dashboard ({ runtime, ims }) {
   )
 }
 
-function KPICard ({ title, value, subtitle, color }) {
+const KPICard = React.memo(function KPICard ({ title, value, subtitle, color }) {
   return (
     <View UNSAFE_className={`mdm-kpi-card mdm-kpi-card--${color}`}>
       <Text UNSAFE_className='mdm-kpi-card__title'>{title}</Text>
@@ -239,9 +235,9 @@ function KPICard ({ title, value, subtitle, color }) {
       <Text UNSAFE_className='mdm-kpi-card__subtitle'>{subtitle}</Text>
     </View>
   )
-}
+})
 
-function HealthItem ({ label, status }) {
+const HealthItem = React.memo(function HealthItem ({ label, status }) {
   const variants = {
     healthy: 'positive',
     degraded: 'notice',
@@ -256,6 +252,6 @@ function HealthItem ({ label, status }) {
       </StatusLight>
     </Flex>
   )
-}
+})
 
 export default Dashboard
