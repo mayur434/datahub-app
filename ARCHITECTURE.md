@@ -49,6 +49,11 @@
 
 ## 1. High-Level Architecture
 
+![Enterprise Architecture – DataHub on Adobe Experience Cloud](docs/architecture-diagram.jpg)
+
+<details>
+<summary>ASCII version (text-based)</summary>
+
 ```
 ┌───────────────────────────────────────────────────────────────────────────────────────┐
 │                           ADOBE EXPERIENCE CLOUD SHELL                                │
@@ -108,6 +113,8 @@
          ├── audit-cleanup-daily  → 2:00 AM UTC → audit-cleanup action
          └── archive-run-daily   → 3:00 AM UTC → archive-run action
 ```
+
+</details>
 
 ---
 
