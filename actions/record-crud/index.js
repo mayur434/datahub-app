@@ -4,7 +4,7 @@
  * Operates on per-master collections (mdm_<masterName>).
  */
 
-const { getDbClient, safeFindOne, COLLECTIONS, getMasterCollection, createAuditLog, createResponse, createErrorResponse, validateIMSToken, getUserFromParams, validateMasterName, checkPermission, validateRecord, computeFieldChanges, publishMutationEvent, checkStorageGuardrails, enforceAppPermission, getNextSequenceId } = require('../mdm-utils')
+const { getDbClient, safeFindOne, COLLECTIONS, getMasterCollection, createAuditLog, createResponse, createErrorResponse, validateIMSToken, getUserFromParams, validateMasterName, checkPermission, validateRecord, computeFieldChanges, publishMutationEvent, checkStorageGuardrails, enforceAppPermission, getNextSequenceId, createRecordVersion, dispatchWebhooks, transitionRecordStatus, RECORD_STATUSES } = require('../mdm-utils')
 
 async function main (params) {
   if (params.__ow_method === 'options') return createResponse({})
@@ -65,6 +65,9 @@ async function main (params) {
         return await handlePatch(client, masterCol, metadata, master, id, data, user, params)
       case 'delete':
         return await handleDelete(client, metaCol, masterCol, metadata, master, id, user, params)
+      case 'transition':
+      case 'status':
+        return await handleStatusTransition(client, metadata, master, id, params, user)
       default:
         return createErrorResponse(`Unsupported operation: ${method}`)
     }
@@ -150,6 +153,7 @@ async function handleCreate (client, metaCol, masterCol, metadata, master, data,
     primaryKey: pk,
     data,
     status: 'active',
+    workflowStatus: metadata.approvalWorkflow ? RECORD_STATUSES.DRAFT : RECORD_STATUSES.PUBLISHED,
     deleted: false,
     createdAt: now,
     createdBy: user,
@@ -164,7 +168,8 @@ async function handleCreate (client, metaCol, masterCol, metadata, master, data,
       { $set: { lastModifiedBy: user }, $currentDate: { updatedAt: true }, $inc: { recordCount: 1 } }
     ),
     createAuditLog(client, { masterName: master, operation: 'create-record', actor: user, status: 'success', affectedRecords: 1 }),
-    publishMutationEvent(client, 'record.created', { master, recordId: pk, data, actor: user })
+    publishMutationEvent(client, 'record.created', { master, recordId: pk, data, actor: user }),
+    dispatchWebhooks(client, 'record.created', { master, recordId: pk, data, actor: user })
   ])
 
   return createResponse({ status: 'success', record: data }, 201)
@@ -209,11 +214,13 @@ async function handleUpdate (client, masterCol, metadata, master, id, data, user
 
   const changes = computeFieldChanges(existing.data, data)
 
-  // Run post-write operations in parallel
+  // Run post-write operations in parallel (including versioning + webhooks)
   const metaCol = await client.collection(COLLECTIONS.METADATA)
   await Promise.all([
+    createRecordVersion(client, master, id, existing.data, 'update', user, params, { changes }),
     createAuditLog(client, { masterName: master, operation: 'update-record', actor: user, status: 'success', affectedRecords: 1, recordId: id, changes }),
     publishMutationEvent(client, 'record.updated', { master, recordId: id, changes, actor: user }),
+    dispatchWebhooks(client, 'record.updated', { master, recordId: id, changes, actor: user }),
     metaCol.updateOne({ masterName: master }, { $set: { lastModifiedBy: user }, $currentDate: { updatedAt: true } })
   ])
 
@@ -272,11 +279,13 @@ async function handlePatch (client, masterCol, metadata, master, id, data, user,
 
   const changes = computeFieldChanges(existing.data, merged)
 
-  // Run post-write operations in parallel
+  // Run post-write operations in parallel (including versioning + webhooks)
   const metaCol = await client.collection(COLLECTIONS.METADATA)
   await Promise.all([
+    createRecordVersion(client, master, id, existing.data, 'patch', user, params, { changes }),
     createAuditLog(client, { masterName: master, operation: 'patch-record', actor: user, status: 'success', affectedRecords: 1, recordId: id, changes }),
     publishMutationEvent(client, 'record.patched', { master, recordId: id, changes, actor: user }),
+    dispatchWebhooks(client, 'record.patched', { master, recordId: id, changes, actor: user }),
     metaCol.updateOne({ masterName: master }, { $set: { lastModifiedBy: user }, $currentDate: { updatedAt: true } })
   ])
 
@@ -300,15 +309,37 @@ async function handleDelete (client, metaCol, masterCol, metadata, master, id, u
 
   // Run post-write operations in parallel
   await Promise.all([
+    createRecordVersion(client, master, id, existing.data, 'delete', user, params),
     metaCol.updateOne(
       { masterName: master },
       { $set: { lastModifiedBy: user }, $currentDate: { updatedAt: true }, $inc: { recordCount: -1 } }
     ),
     createAuditLog(client, { masterName: master, operation: 'delete-record', actor: user, status: 'success', affectedRecords: 1, recordId: id }),
-    publishMutationEvent(client, 'record.deleted', { master, recordId: id, actor: user })
+    publishMutationEvent(client, 'record.deleted', { master, recordId: id, actor: user }),
+    dispatchWebhooks(client, 'record.deleted', { master, recordId: id, actor: user })
   ])
 
   return createResponse({ status: 'success', message: `Record '${id}' deleted` })
+}
+
+// ============ Status Transition (Approval Workflow) ============
+
+async function handleStatusTransition (client, metadata, master, id, params, user) {
+  if (!id) return createErrorResponse('Record ID is required for status transition')
+  const newStatus = params.newStatus || params.status
+  if (!newStatus) return createErrorResponse('Missing required parameter: newStatus')
+
+  try {
+    const result = await transitionRecordStatus(
+      client, master, id, newStatus, user, params, params.comment
+    )
+    await dispatchWebhooks(client, 'record.status_changed', {
+      master, recordId: id, ...result, actor: user
+    })
+    return createResponse({ status: 'success', ...result })
+  } catch (error) {
+    return createErrorResponse(error.message, 400)
+  }
 }
 
 exports.main = main

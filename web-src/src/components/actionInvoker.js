@@ -322,3 +322,84 @@ export async function updateAppRole (roleData, ims) {
 export async function deleteAppRole (roleId, ims) {
   return invokeAction('user-management', { op: 'delete-role', roleId }, ims, 'POST')
 }
+
+// ============ Data Export & Enterprise Features ============
+
+/**
+ * Export master data as CSV/JSON with filters.
+ */
+export async function exportData (master, opts, ims) {
+  return invokeAction('data-export', { op: 'export', master, ...opts }, ims, 'POST')
+}
+
+/**
+ * Preview export — returns first N matching records.
+ */
+export async function previewExport (master, opts, ims) {
+  return invokeAction('data-export', { op: 'preview', master, ...opts }, ims, 'GET')
+}
+
+/**
+ * Data quality report for a master entity.
+ */
+export async function fetchDataQuality (master, opts, ims) {
+  return invokeAction('data-export', { op: 'quality', master, ...opts }, ims, 'GET')
+}
+
+/**
+ * Find potential duplicate records.
+ */
+export async function findDuplicates (master, opts, ims) {
+  return invokeAction('data-export', { op: 'duplicates', master, ...opts }, ims, 'POST')
+}
+
+/**
+ * Get version history for a specific record.
+ */
+export async function fetchRecordVersions (master, recordId, opts, ims) {
+  return invokeAction('data-export', { op: 'versions', master, recordId, ...opts }, ims, 'GET')
+}
+
+/**
+ * Rollback a record to a previous version.
+ */
+export async function rollbackRecord (master, recordId, targetVersion, ims) {
+  return invokeAction('data-export', { op: 'rollback', master, recordId, targetVersion }, ims, 'POST')
+}
+
+/**
+ * Transition a record's workflow status (approval workflow).
+ */
+export async function transitionRecordStatus (master, id, newStatus, comment, ims) {
+  return invokeAction('record-crud', { master, id, operation: 'transition', newStatus, comment }, ims, 'POST')
+}
+
+// ============ Partner Webhook Management ============
+
+/**
+ * Rotate a partner's API key.
+ */
+export async function rotatePartnerKey (partnerId, expiryDays, ims) {
+  return invokeAction('partner-management', { op: 'rotate-key', partnerId, expiryDays }, ims, 'POST')
+}
+
+/**
+ * Register a webhook subscription for a partner.
+ */
+export async function registerWebhook (partnerId, url, events, masters, ims) {
+  return invokeAction('partner-management', { op: 'register-webhook', partnerId, url, events, masters }, ims, 'POST')
+}
+
+/**
+ * List webhook subscriptions.
+ */
+export async function fetchWebhooks (partnerId, ims) {
+  return invokeAction('partner-management', { op: 'list-webhooks', partnerId }, ims, 'POST')
+}
+
+/**
+ * Delete a webhook subscription.
+ */
+export async function deleteWebhook (webhookId, ims) {
+  return invokeAction('partner-management', { op: 'delete-webhook', webhookId }, ims, 'POST')
+}

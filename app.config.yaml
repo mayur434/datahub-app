@@ -244,6 +244,16 @@ application:
               require-adobe-auth: true
               final: true
               include-ims-credentials: true
+          data-export:
+            function: actions/data-export/index.js
+            web: 'yes'
+            runtime: nodejs:22
+            limits:
+              timeout: 120000
+            annotations:
+              require-adobe-auth: true
+              final: true
+              include-ims-credentials: true
     # ──────────────────────────────────────────────────────────────────────
     # Alarm triggers & rules are deployed by the post-app-deploy hook
     # (hooks/post-app-deploy.js) because `aio app deploy` only processes

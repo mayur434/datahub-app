@@ -11,7 +11,7 @@
  */
 
 const crypto = require('crypto')
-const { getDbClient, safeFindOne, COLLECTIONS, createAuditLog, createResponse, createErrorResponse, validateIMSToken, getUserFromParams, getTimezoneDate, enforceAppPermission } = require('../mdm-utils')
+const { getDbClient, safeFindOne, COLLECTIONS, createAuditLog, createResponse, createErrorResponse, validateIMSToken, getUserFromParams, getTimezoneDate, enforceAppPermission, rotatePartnerKey, registerWebhook } = require('../mdm-utils')
 
 /**
  * Generate a secure random partner key (48 chars, prefixed).
@@ -69,6 +69,14 @@ async function main (params) {
           return await handleUpdate(client, partnersCol, params, user)
         case 'delete':
           return await handleDelete(client, partnersCol, params, user)
+        case 'rotate-key':
+          return await handleRotateKey(client, partnersCol, params, user)
+        case 'register-webhook':
+          return await handleRegisterWebhook(client, partnersCol, params, user)
+        case 'list-webhooks':
+          return await handleListWebhooks(client, params)
+        case 'delete-webhook':
+          return await handleDeleteWebhook(client, params, user)
         default:
           // If partnerId is present but no op, treat as update (likely body parse issue)
           if (params.partnerId) {
@@ -144,6 +152,7 @@ async function handleCreate (client, partnersCol, params, user) {
     allowedMasters: Array.isArray(allowedMasters) ? allowedMasters : [],
     status: 'active',
     deleted: false,
+    keyExpiresAt: computeKeyExpiry(params.keyExpiryDays || 365),
     createdAt: now,
     updatedAt: now,
     createdBy: user
@@ -258,6 +267,103 @@ async function handleDelete (client, partnersCol, params, user) {
     partnerId,
     message: 'Partner removed successfully'
   })
+}
+
+// ============ POST op=rotate-key — Rotate API key with expiry ============
+
+function computeKeyExpiry (days) {
+  const dt = new Date()
+  dt.setDate(dt.getDate() + Number(days || 365))
+  return dt.toISOString()
+}
+
+async function handleRotateKey (client, partnersCol, params, user) {
+  const { partnerId, expiryDays } = params
+  if (!partnerId) return createErrorResponse('Missing required parameter: partnerId', 400)
+
+  const partner = await safeFindOne(partnersCol, { partnerId, deleted: { $ne: true } })
+  if (!partner) return createErrorResponse('Partner not found', 404)
+
+  const result = await rotatePartnerKey(partnersCol, partnerId, expiryDays || 365)
+
+  await createAuditLog(client, {
+    action: 'partner-key-rotate',
+    masterName: '_partners',
+    user,
+    detail: `API key rotated for partner: ${partner.name} (${partnerId}), expires: ${result.expiresAt}`
+  })
+
+  return createResponse({
+    status: 'rotated',
+    partnerId,
+    partnerKey: result.partnerKey,
+    expiresAt: result.expiresAt,
+    message: 'New API key generated. Save it — it will not be shown again.'
+  })
+}
+
+// ============ POST op=register-webhook — Register webhook subscription ============
+
+async function handleRegisterWebhook (client, partnersCol, params, user) {
+  const { partnerId, url, events, masters, secret } = params
+  if (!partnerId) return createErrorResponse('Missing required parameter: partnerId', 400)
+
+  const partner = await safeFindOne(partnersCol, { partnerId, deleted: { $ne: true } })
+  if (!partner) return createErrorResponse('Partner not found', 404)
+
+  try {
+    const result = await registerWebhook(client, { partnerId, url, events, masters, secret }, user, params)
+    await createAuditLog(client, {
+      action: 'webhook-register',
+      masterName: '_webhooks',
+      user,
+      detail: `Webhook registered for partner ${partner.name}: ${url} → [${events.join(', ')}]`
+    })
+    return createResponse({ status: 'created', webhook: result }, 201)
+  } catch (error) {
+    return createErrorResponse(error.message, 400)
+  }
+}
+
+// ============ POST op=list-webhooks — List webhook subscriptions ============
+
+async function handleListWebhooks (client, params) {
+  const { partnerId } = params
+  const webhooksCol = await client.collection(COLLECTIONS.WEBHOOKS)
+
+  const filter = {}
+  if (partnerId) filter.partnerId = partnerId
+
+  const webhooks = await webhooksCol.find(filter).sort({ createdAt: -1 }).toArray()
+  // Strip secrets from listing
+  const safe = webhooks.map(w => {
+    const { secret, ...rest } = w
+    return { ...rest, hasSecret: !!secret }
+  })
+
+  return createResponse({ webhooks: safe, count: safe.length })
+}
+
+// ============ POST op=delete-webhook — Remove webhook subscription ============
+
+async function handleDeleteWebhook (client, params, user) {
+  const { webhookId } = params
+  if (!webhookId) return createErrorResponse('Missing required parameter: webhookId', 400)
+
+  const webhooksCol = await client.collection(COLLECTIONS.WEBHOOKS)
+  const webhook = await safeFindOne(webhooksCol, { webhookId })
+  if (!webhook) return createErrorResponse('Webhook not found', 404)
+
+  await webhooksCol.deleteOne({ webhookId })
+
+  await createAuditLog(client, {
+    action: 'webhook-delete',
+    masterName: '_webhooks',
+    user,
+    detail: `Webhook deleted: ${webhook.url} (${webhookId})`
+  })
+
+  return createResponse({ status: 'deleted', webhookId })
 }
 
 exports.main = main

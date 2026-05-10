@@ -58,7 +58,9 @@ const COLLECTIONS = {
   USER_SESSIONS: 'user_sessions',
   APP_USERS: 'app_users',
   APP_ROLES: 'app_roles',
-  COUNTERS: 'counters'
+  COUNTERS: 'counters',
+  RECORD_VERSIONS: 'record_versions',
+  WEBHOOKS: 'webhooks'
 }
 
 /**
@@ -181,7 +183,10 @@ const ACTION_FEATURE_MAP = {
   'archive-run': ['archive_management'],
 
   // User management
-  'user-management': ['user_management']
+  'user-management': ['user_management'],
+
+  // Data export (quality, duplicates, versions, rollback)
+  'data-export': ['masters', 'query_console', 'record_management']
 }
 
 /**
@@ -961,6 +966,11 @@ async function validatePartner (client, params) {
     return { valid: false, error: `Partner account is ${partner.status}` }
   }
 
+  // Check key expiry
+  if (isPartnerKeyExpired(partner)) {
+    return { valid: false, error: 'Partner API key has expired. Contact an administrator to rotate the key.' }
+  }
+
   // Constant-time comparison to prevent timing attacks
   const expectedKey = partner.partnerKey
   if (!expectedKey || partnerKey.length !== expectedKey.length) {
@@ -1467,6 +1477,687 @@ function decompressCsvContent (params) {
   return decompressed.toString('utf-8')
 }
 
+// ============ Record Versioning ============
+
+/**
+ * Create a versioned snapshot of a record before mutation.
+ * Stores the previous state in the record_versions collection
+ * with the version number, actor, timestamp, and change summary.
+ *
+ * @param {object} client - DB client
+ * @param {string} masterName - Entity name
+ * @param {string} primaryKey - Record PK
+ * @param {object} previousData - Record data BEFORE the change
+ * @param {string} operation - 'update' | 'patch' | 'delete' | 'status-change'
+ * @param {string} actor - User who made the change
+ * @param {object} params - Action params for timezone
+ * @param {object} [changeSummary] - Optional { changes, newData } for diff
+ * @returns {number} The version number stored
+ */
+async function createRecordVersion (client, masterName, primaryKey, previousData, operation, actor, params, changeSummary = {}) {
+  try {
+    const settings = await getCachedSettings(client)
+    if (settings?.versioning?.enabled === false) return 0
+
+    const versionsCol = await client.collection(COLLECTIONS.RECORD_VERSIONS)
+    const maxVersions = settings?.versioning?.maxVersionsPerRecord || 50
+
+    // Get current version count for this record
+    let existingVersions = []
+    try {
+      existingVersions = await versionsCol.find({
+        masterName,
+        primaryKey: String(primaryKey)
+      }).sort({ version: -1 }).toArray()
+    } catch (e) { /* collection may not exist */ }
+
+    const nextVersion = existingVersions.length > 0 ? existingVersions[0].version + 1 : 1
+
+    // Store version snapshot
+    await versionsCol.insertOne({
+      masterName,
+      primaryKey: String(primaryKey),
+      version: nextVersion,
+      data: previousData,
+      operation,
+      actor,
+      timestamp: getTimezoneDate(params),
+      changes: changeSummary.changes || [],
+      ttl: getTimezoneDate(params) // for potential future cleanup
+    })
+
+    // Prune old versions beyond maxVersionsPerRecord (FIFO)
+    if (existingVersions.length >= maxVersions) {
+      const toDelete = existingVersions.slice(maxVersions - 1)
+      for (const old of toDelete) {
+        try { await versionsCol.deleteOne({ _id: old._id }) } catch (e) { /* best-effort */ }
+      }
+    }
+
+    return nextVersion
+  } catch (e) {
+    console.warn('Version creation failed (non-blocking):', e.message)
+    return 0
+  }
+}
+
+/**
+ * Get version history for a record.
+ * Returns versions sorted newest-first with pagination.
+ */
+async function getRecordVersions (client, masterName, primaryKey, opts = {}) {
+  const versionsCol = await client.collection(COLLECTIONS.RECORD_VERSIONS)
+  const page = opts.page || 1
+  const pageSize = opts.pageSize || 20
+  const skip = (page - 1) * pageSize
+
+  const filter = { masterName, primaryKey: String(primaryKey) }
+  const versions = await versionsCol.find(filter)
+    .sort({ version: -1 })
+    .skip(skip)
+    .limit(pageSize)
+    .toArray()
+
+  let total = 0
+  try { total = await versionsCol.countDocuments(filter) } catch (e) { /* best-effort */ }
+
+  return { versions, total, page, pageSize }
+}
+
+/**
+ * Rollback a record to a specific version.
+ * Restores the record data from the version snapshot.
+ */
+async function rollbackRecord (client, masterName, primaryKey, targetVersion, actor, params) {
+  const versionsCol = await client.collection(COLLECTIONS.RECORD_VERSIONS)
+  const masterCol = await getMasterCollection(client, masterName)
+
+  // Find the target version
+  const versionDoc = await safeFindOne(versionsCol, {
+    masterName,
+    primaryKey: String(primaryKey),
+    version: targetVersion
+  })
+  if (!versionDoc) {
+    throw new Error(`Version ${targetVersion} not found for record '${primaryKey}' in '${masterName}'`)
+  }
+
+  // Get current record state (to version it before rollback)
+  const current = await safeFindOne(masterCol, { primaryKey: String(primaryKey) })
+  if (!current) {
+    throw new Error(`Record '${primaryKey}' not found in '${masterName}'`)
+  }
+
+  // Version the current state before overwriting
+  await createRecordVersion(client, masterName, primaryKey, current.data, 'rollback', actor, params, {
+    changes: [{ field: '_rollback', oldValue: 'current', newValue: `v${targetVersion}` }]
+  })
+
+  // Restore the versioned data
+  await masterCol.updateOne(
+    { primaryKey: String(primaryKey) },
+    { $set: { data: versionDoc.data, updatedBy: actor, deleted: false, status: 'active' }, $currentDate: { updatedAt: true } }
+  )
+
+  await createAuditLog(client, {
+    masterName,
+    operation: 'rollback-record',
+    actor,
+    status: 'success',
+    recordId: primaryKey,
+    detail: `Rolled back to version ${targetVersion}`
+  })
+
+  return { status: 'success', restoredVersion: targetVersion, data: versionDoc.data }
+}
+
+// ============ Data Quality Scoring ============
+
+/**
+ * Compute data quality score for a single record.
+ * Returns a 0-100 completeness percentage and field-level breakdown.
+ *
+ * Scoring weights:
+ *   - Required field filled: 3 points
+ *   - Optional field filled: 1 point
+ *   - Format valid (passes validation rules): +1 bonus point
+ *
+ * @param {object} data - Record data
+ * @param {Array} schema - Entity schema definition
+ * @returns {{ score: number, totalPoints: number, earnedPoints: number, fields: Array }}
+ */
+function computeRecordQuality (data, schema) {
+  if (!data || !schema || schema.length === 0) return { score: 100, totalPoints: 0, earnedPoints: 0, fields: [] }
+
+  let totalPoints = 0
+  let earnedPoints = 0
+  const fields = []
+
+  for (const field of schema) {
+    const weight = field.required ? 3 : 1
+    const bonusWeight = (field.validation && Object.keys(field.validation).length > 0) ? 1 : 0
+    const fieldTotal = weight + bonusWeight
+    totalPoints += fieldTotal
+
+    const value = data[field.name]
+    const hasValue = value !== undefined && value !== null && value !== ''
+    let fieldEarned = 0
+    let status = 'missing'
+
+    if (hasValue) {
+      fieldEarned += weight
+      status = 'filled'
+
+      // Check validation rules for bonus points
+      if (bonusWeight > 0) {
+        const errors = validateRecord({ [field.name]: value }, [field])
+        if (errors.length === 0) {
+          fieldEarned += bonusWeight
+          status = 'valid'
+        } else {
+          status = 'invalid-format'
+        }
+      }
+    }
+
+    earnedPoints += fieldEarned
+    fields.push({
+      name: field.name,
+      required: !!field.required,
+      status,
+      points: fieldEarned,
+      maxPoints: fieldTotal
+    })
+  }
+
+  const score = totalPoints > 0 ? Math.round((earnedPoints / totalPoints) * 100) : 100
+
+  return { score, totalPoints, earnedPoints, fields }
+}
+
+/**
+ * Compute aggregate data quality metrics for an entity.
+ * Samples records to calculate average quality score, common missing fields, etc.
+ *
+ * @param {object} client - DB client
+ * @param {string} masterName - Entity name
+ * @param {object} metadata - Entity metadata with schema
+ * @param {number} [sampleSize=500] - Max records to sample
+ * @returns {{ avgScore, distribution, fieldCompleteness, totalRecords, sampledRecords }}
+ */
+async function computeEntityQuality (client, masterName, metadata, sampleSize = 500) {
+  const masterCol = await getMasterCollection(client, masterName)
+  const records = await masterCol.find({ deleted: false })
+    .limit(sampleSize)
+    .toArray()
+
+  if (records.length === 0) {
+    return { avgScore: 0, distribution: {}, fieldCompleteness: {}, totalRecords: 0, sampledRecords: 0 }
+  }
+
+  let totalScore = 0
+  const distribution = { excellent: 0, good: 0, fair: 0, poor: 0 } // 90+, 70-89, 50-69, <50
+  const fieldFilled = {}
+  const fieldTotal = {}
+
+  for (const record of records) {
+    const quality = computeRecordQuality(record.data, metadata.schema)
+    totalScore += quality.score
+
+    if (quality.score >= 90) distribution.excellent++
+    else if (quality.score >= 70) distribution.good++
+    else if (quality.score >= 50) distribution.fair++
+    else distribution.poor++
+
+    for (const f of quality.fields) {
+      fieldFilled[f.name] = (fieldFilled[f.name] || 0) + (f.status !== 'missing' ? 1 : 0)
+      fieldTotal[f.name] = (fieldTotal[f.name] || 0) + 1
+    }
+  }
+
+  const fieldCompleteness = {}
+  for (const [name, filled] of Object.entries(fieldFilled)) {
+    fieldCompleteness[name] = Math.round((filled / fieldTotal[name]) * 100)
+  }
+
+  return {
+    avgScore: Math.round(totalScore / records.length),
+    distribution,
+    fieldCompleteness,
+    totalRecords: metadata.recordCount || records.length,
+    sampledRecords: records.length
+  }
+}
+
+// ============ Duplicate Detection ============
+
+/**
+ * Compute similarity between two strings using trigram overlap (Dice coefficient).
+ * Returns a value between 0.0 (no match) and 1.0 (exact match).
+ * Faster than Levenshtein for longer strings and more suitable for fuzzy matching.
+ */
+function computeSimilarity (str1, str2) {
+  if (!str1 || !str2) return 0
+  const a = String(str1).toLowerCase().trim()
+  const b = String(str2).toLowerCase().trim()
+  if (a === b) return 1.0
+  if (a.length < 2 || b.length < 2) return 0
+
+  const trigramsA = new Set()
+  const trigramsB = new Set()
+  for (let i = 0; i <= a.length - 2; i++) trigramsA.add(a.substring(i, i + 2))
+  for (let i = 0; i <= b.length - 2; i++) trigramsB.add(b.substring(i, i + 2))
+
+  let intersection = 0
+  for (const t of trigramsA) {
+    if (trigramsB.has(t)) intersection++
+  }
+
+  return (2 * intersection) / (trigramsA.size + trigramsB.size)
+}
+
+/**
+ * Find potential duplicate records in a master.
+ * Compares specified fields using trigram similarity.
+ *
+ * @param {object} client - DB client
+ * @param {string} masterName - Entity name
+ * @param {object} metadata - Entity metadata
+ * @param {object} opts - { matchFields: string[], threshold: number (0-1), limit: number }
+ * @returns {{ duplicates: Array<{ records: [obj, obj], similarity: number, matchedFields: string[] }> }}
+ */
+async function findDuplicates (client, masterName, metadata, opts = {}) {
+  const masterCol = await getMasterCollection(client, masterName)
+  const threshold = opts.threshold || 0.8
+  const limit = opts.limit || 100
+  const matchFields = opts.matchFields || metadata.schema.filter(f => f.queryable || f.required).map(f => f.name).slice(0, 3)
+
+  if (matchFields.length === 0) return { duplicates: [], message: 'No matchable fields configured' }
+
+  // Fetch records (limit sample size for performance within serverless constraints)
+  const maxSample = Math.min(opts.sampleSize || 1000, 2000)
+  const records = await masterCol.find({ deleted: false })
+    .limit(maxSample)
+    .toArray()
+
+  if (records.length < 2) return { duplicates: [], sampledRecords: records.length }
+
+  const duplicates = []
+  const pk = metadata.primaryKey
+
+  // Pairwise comparison — O(n²) but capped by sample size
+  for (let i = 0; i < records.length && duplicates.length < limit; i++) {
+    for (let j = i + 1; j < records.length && duplicates.length < limit; j++) {
+      const a = records[i].data
+      const b = records[j].data
+      let totalSim = 0
+      let fieldCount = 0
+      const matched = []
+
+      for (const field of matchFields) {
+        const sim = computeSimilarity(a[field], b[field])
+        if (sim >= threshold) {
+          matched.push({ field, similarity: Math.round(sim * 100) })
+        }
+        totalSim += sim
+        fieldCount++
+      }
+
+      const avgSim = fieldCount > 0 ? totalSim / fieldCount : 0
+      if (matched.length > 0 && avgSim >= threshold) {
+        duplicates.push({
+          recordA: { [pk]: a[pk], ...a },
+          recordB: { [pk]: b[pk], ...b },
+          avgSimilarity: Math.round(avgSim * 100),
+          matchedFields: matched
+        })
+      }
+    }
+  }
+
+  return { duplicates, sampledRecords: records.length, threshold: Math.round(threshold * 100) }
+}
+
+// ============ Approval Workflow ============
+
+/**
+ * Record lifecycle statuses for approval workflow.
+ * Records start as 'draft' and progress through review states.
+ * Only 'approved' or 'published' records are visible via the public API.
+ */
+const RECORD_STATUSES = {
+  DRAFT: 'draft',
+  PENDING_REVIEW: 'pending_review',
+  APPROVED: 'approved',
+  REJECTED: 'rejected',
+  PUBLISHED: 'published',
+  ARCHIVED: 'archived'
+}
+
+/**
+ * Valid status transitions. Key = current status, value = allowed next statuses.
+ */
+const STATUS_TRANSITIONS = {
+  draft: ['pending_review', 'archived'],
+  pending_review: ['approved', 'rejected', 'draft'],
+  approved: ['published', 'draft', 'archived'],
+  rejected: ['draft', 'archived'],
+  published: ['draft', 'archived'],
+  archived: ['draft']
+}
+
+/**
+ * Check if a status transition is valid.
+ */
+function isValidStatusTransition (from, to) {
+  if (!from || !to) return false
+  const allowed = STATUS_TRANSITIONS[from]
+  return allowed && allowed.includes(to)
+}
+
+/**
+ * Transition a record's workflow status.
+ * Validates the transition, creates a version snapshot, and updates the record.
+ *
+ * @param {object} client - DB client
+ * @param {string} masterName - Entity name
+ * @param {string} primaryKey - Record PK
+ * @param {string} newStatus - Target status
+ * @param {string} actor - User performing the transition
+ * @param {object} params - Action params
+ * @param {string} [comment] - Optional review comment
+ * @returns {{ status, previousStatus, record }}
+ */
+async function transitionRecordStatus (client, masterName, primaryKey, newStatus, actor, params, comment) {
+  const masterCol = await getMasterCollection(client, masterName)
+  const record = await safeFindOne(masterCol, { primaryKey: String(primaryKey) })
+  if (!record) throw new Error(`Record '${primaryKey}' not found`)
+
+  const currentStatus = record.workflowStatus || RECORD_STATUSES.PUBLISHED // backwards compat
+
+  if (!isValidStatusTransition(currentStatus, newStatus)) {
+    throw new Error(`Invalid transition: ${currentStatus} → ${newStatus}. Allowed: ${(STATUS_TRANSITIONS[currentStatus] || []).join(', ')}`)
+  }
+
+  // Version the current state before status change
+  await createRecordVersion(client, masterName, primaryKey, record.data, 'status-change', actor, params, {
+    changes: [{ field: '_workflowStatus', oldValue: currentStatus, newValue: newStatus }]
+  })
+
+  const updateFields = {
+    workflowStatus: newStatus,
+    updatedBy: actor,
+    [`workflow_${newStatus}_at`]: getTimezoneDate(params),
+    [`workflow_${newStatus}_by`]: actor
+  }
+  if (comment) updateFields.workflowComment = comment
+
+  await masterCol.updateOne(
+    { primaryKey: String(primaryKey) },
+    { $set: updateFields, $currentDate: { updatedAt: true } }
+  )
+
+  await createAuditLog(client, {
+    masterName,
+    operation: 'status-transition',
+    actor,
+    status: 'success',
+    recordId: primaryKey,
+    detail: `${currentStatus} → ${newStatus}${comment ? ': ' + comment : ''}`
+  })
+
+  return { status: newStatus, previousStatus: currentStatus }
+}
+
+// ============ Webhook Subscriptions ============
+
+/**
+ * Register a webhook subscription for a partner.
+ * Partners can subscribe to specific event types for specific masters.
+ *
+ * @param {object} client - DB client
+ * @param {object} webhookData - { partnerId, url, events: string[], masters: string[], secret }
+ * @param {string} actor - User registering the webhook
+ * @param {object} params - Action params
+ * @returns {object} Created webhook subscription
+ */
+async function registerWebhook (client, webhookData, actor, params) {
+  const { partnerId, url, events, masters, secret } = webhookData
+
+  if (!partnerId || !url || !events || events.length === 0) {
+    throw new Error('partnerId, url, and events[] are required for webhook registration')
+  }
+
+  // Validate URL format
+  try { new URL(url) } catch (e) { throw new Error('Invalid webhook URL') }
+
+  // Only allow HTTPS endpoints (security requirement)
+  if (!url.startsWith('https://')) {
+    throw new Error('Webhook URL must use HTTPS')
+  }
+
+  const webhooksCol = await client.collection(COLLECTIONS.WEBHOOKS)
+  const webhookId = 'wh_' + crypto.randomBytes(8).toString('hex')
+  const webhookSecret = secret || crypto.randomBytes(32).toString('hex')
+
+  const subscription = {
+    webhookId,
+    partnerId,
+    url,
+    events, // e.g. ['record.created', 'record.updated', 'record.deleted']
+    masters: masters || ['*'], // '*' = all masters
+    secret: webhookSecret,
+    status: 'active',
+    failureCount: 0,
+    lastDeliveredAt: null,
+    createdAt: getTimezoneDate(params),
+    createdBy: actor
+  }
+
+  await webhooksCol.insertOne(subscription)
+
+  return { webhookId, url, events, masters: subscription.masters, status: 'active' }
+}
+
+/**
+ * Dispatch webhook notifications for a data mutation event.
+ * Finds all active subscriptions matching the event type and master,
+ * then fires HTTP POST to each endpoint with HMAC signature.
+ *
+ * Delivery is best-effort within the serverless execution window.
+ * Failed deliveries increment failureCount; auto-disable after 10 consecutive failures.
+ *
+ * @param {object} client - DB client
+ * @param {string} eventType - e.g. 'record.created'
+ * @param {object} payload - Event payload { master, recordId, data, actor }
+ */
+async function dispatchWebhooks (client, eventType, payload) {
+  try {
+    const settings = await getCachedSettings(client)
+    if (!settings?.webhooks?.enabled) return
+
+    const webhooksCol = await client.collection(COLLECTIONS.WEBHOOKS)
+    const masterName = payload.master || payload.masterName || '*'
+
+    // Find matching subscriptions
+    const subscriptions = await webhooksCol.find({
+      status: 'active',
+      events: eventType
+    }).toArray()
+
+    // Filter by master match
+    const matching = subscriptions.filter(s =>
+      s.masters.includes('*') || s.masters.includes(masterName)
+    )
+
+    if (matching.length === 0) return
+
+    const eventId = generateId()
+    const timestamp = new Date().toISOString()
+
+    // Fire webhooks in parallel (best-effort, 5s timeout each)
+    const deliveryPromises = matching.map(async (sub) => {
+      const body = JSON.stringify({
+        id: eventId,
+        type: eventType,
+        timestamp,
+        data: payload
+      })
+
+      // HMAC-SHA256 signature for payload verification
+      const signature = crypto.createHmac('sha256', sub.secret).update(body).digest('hex')
+
+      try {
+        const controller = new AbortController()
+        const timeout = setTimeout(() => controller.abort(), 5000)
+
+        const res = await fetch(sub.url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Webhook-Id': sub.webhookId,
+            'X-Webhook-Event': eventType,
+            'X-Webhook-Signature': `sha256=${signature}`,
+            'X-Webhook-Timestamp': timestamp
+          },
+          body,
+          signal: controller.signal
+        })
+        clearTimeout(timeout)
+
+        if (res.ok) {
+          // Reset failure count on success
+          await webhooksCol.updateOne(
+            { webhookId: sub.webhookId },
+            { $set: { failureCount: 0, lastDeliveredAt: timestamp, lastStatus: res.status } }
+          )
+        } else {
+          await incrementWebhookFailure(webhooksCol, sub)
+        }
+      } catch (e) {
+        await incrementWebhookFailure(webhooksCol, sub)
+      }
+    })
+
+    await Promise.allSettled(deliveryPromises)
+  } catch (e) {
+    // Webhook dispatch is best-effort — never fails the main operation
+    console.warn('Webhook dispatch error:', e.message)
+  }
+}
+
+/**
+ * Increment webhook failure count; auto-disable after threshold.
+ */
+async function incrementWebhookFailure (webhooksCol, sub) {
+  const newCount = (sub.failureCount || 0) + 1
+  const update = { failureCount: newCount, lastFailedAt: new Date().toISOString() }
+  if (newCount >= 10) {
+    update.status = 'disabled'
+    update.disabledReason = 'Too many consecutive delivery failures'
+  }
+  try {
+    await webhooksCol.updateOne({ webhookId: sub.webhookId }, { $set: update })
+  } catch (e) { /* best-effort */ }
+}
+
+// ============ API Key Rotation & Expiry ============
+
+/**
+ * Check if a partner's API key has expired.
+ * Partners can have an optional expiresAt date on their credentials.
+ */
+function isPartnerKeyExpired (partner) {
+  if (!partner.keyExpiresAt) return false
+  return new Date(partner.keyExpiresAt) < new Date()
+}
+
+/**
+ * Generate a new partner key and set expiry.
+ * Returns the new key (shown once) and updates the partner record.
+ *
+ * @param {object} partnersCol - Partners collection handle
+ * @param {string} partnerId - Partner ID
+ * @param {number} [expiryDays=365] - Days until the new key expires
+ * @returns {{ partnerKey, expiresAt }}
+ */
+async function rotatePartnerKey (partnersCol, partnerId, expiryDays = 365) {
+  const newKey = 'pk_' + crypto.randomBytes(32).toString('base64url').substring(0, 45)
+  const expiresAt = new Date()
+  expiresAt.setDate(expiresAt.getDate() + expiryDays)
+
+  await partnersCol.updateOne(
+    { partnerId },
+    { $set: { partnerKey: newKey, keyExpiresAt: expiresAt.toISOString(), keyRotatedAt: new Date().toISOString() } }
+  )
+
+  return { partnerKey: newKey, expiresAt: expiresAt.toISOString() }
+}
+
+// ============ Cross-Entity Lookups ============
+
+/**
+ * Resolve a foreign key reference to another master.
+ * Used for cross-entity relationships (e.g. product.categoryId → categories).
+ *
+ * Schema fields can define a `reference` property:
+ *   { name: 'categoryId', type: 'string', reference: { master: 'categories', field: 'categoryName' } }
+ *
+ * @param {object} client - DB client
+ * @param {string} targetMaster - The master to look up
+ * @param {string} targetPK - The primary key value in the target master
+ * @param {string[]} [fields] - Specific fields to return (null = all)
+ * @returns {object|null} The referenced record's data or null
+ */
+async function resolveReference (client, targetMaster, targetPK, fields) {
+  const masterCol = await getMasterCollection(client, targetMaster)
+  const record = await safeFindOne(masterCol, { primaryKey: String(targetPK), deleted: false })
+  if (!record) return null
+
+  if (fields && fields.length > 0) {
+    const subset = {}
+    for (const f of fields) {
+      if (record.data[f] !== undefined) subset[f] = record.data[f]
+    }
+    return subset
+  }
+  return record.data
+}
+
+/**
+ * Resolve all foreign key references in a record's data.
+ * Iterates schema fields with `reference` definitions and hydrates them.
+ *
+ * @param {object} client - DB client
+ * @param {object} data - Record data
+ * @param {Array} schema - Entity schema
+ * @returns {object} Data with _resolved map for referenced fields
+ */
+async function resolveRecordReferences (client, data, schema) {
+  const referencedFields = schema.filter(f => f.reference && f.reference.master)
+  if (referencedFields.length === 0) return data
+
+  const resolved = {}
+  const promises = referencedFields.map(async (field) => {
+    const fkValue = data[field.name]
+    if (!fkValue) return
+    const ref = await resolveReference(
+      client,
+      field.reference.master,
+      fkValue,
+      field.reference.fields || null
+    )
+    if (ref) resolved[field.name] = ref
+  })
+
+  await Promise.all(promises)
+
+  if (Object.keys(resolved).length > 0) {
+    return { ...data, _resolved: resolved }
+  }
+  return data
+}
+
 module.exports = {
   getDbClient,
   safeFindOne,
@@ -1515,5 +2206,29 @@ module.exports = {
   extractUserId,
   getFilesClient,
   decompressCsvContent,
-  getNextSequenceId
+  getNextSequenceId,
+  // Record Versioning
+  createRecordVersion,
+  getRecordVersions,
+  rollbackRecord,
+  // Data Quality
+  computeRecordQuality,
+  computeEntityQuality,
+  // Duplicate Detection
+  computeSimilarity,
+  findDuplicates,
+  // Approval Workflow
+  RECORD_STATUSES,
+  STATUS_TRANSITIONS,
+  isValidStatusTransition,
+  transitionRecordStatus,
+  // Webhook Subscriptions
+  registerWebhook,
+  dispatchWebhooks,
+  // API Key Rotation
+  isPartnerKeyExpired,
+  rotatePartnerKey,
+  // Cross-Entity References
+  resolveReference,
+  resolveRecordReferences
 }
