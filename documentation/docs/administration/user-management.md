@@ -2,7 +2,7 @@
 title: "User Management"
 sidebar_position: 40
 description: "Technical documentation for the User Management feature in DataHub Platform."
-custom_edit_url: https://github.com/mayur434/pimapp/blob/main/actions/user-management/index.js
+custom_edit_url: https://github.com/mayur434/datahub-app/blob/main/actions/user-management/index.js
 ---
 
 > Full CRUD for application users and custom roles with dynamic granular permissions, bulk user creation, and session management.

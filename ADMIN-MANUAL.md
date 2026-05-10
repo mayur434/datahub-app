@@ -1481,7 +1481,7 @@ aio runtime activation list --limit 20
 aio runtime activation logs <activation-id>
 
 # Invoke an action directly for testing
-aio runtime action invoke pimapp/dashboard --result
+aio runtime action invoke datahub/dashboard --result
 
 # Check deployed actions
 aio runtime action list

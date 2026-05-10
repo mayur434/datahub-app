@@ -7,7 +7,8 @@ import {
 } from '@adobe/react-spectrum'
 import {
   fetchAppUsers, fetchAppRoles, createAppUser, bulkCreateAppUsers,
-  updateAppUser, deleteAppUser, createAppRole, updateAppRole, deleteAppRole
+  updateAppUser, deleteAppUser, createAppRole, updateAppRole, deleteAppRole,
+  fetchUsersAndRoles
 } from './actionInvoker'
 import { useApp } from './AppContext'
 import { useNotifications } from './NotificationProvider'
@@ -52,13 +53,10 @@ function UserManagement ({ runtime, ims }) {
     try {
       if (showRefresh) setRefreshing(true)
       else setLoading(true)
-      const [usersRes, rolesRes] = await Promise.all([
-        fetchAppUsers(ims),
-        fetchAppRoles(ims)
-      ])
-      setUsers(usersRes.users || [])
-      setRoles(rolesRes.roles || [])
-      setFeatures(rolesRes.features || [])
+      const res = await fetchUsersAndRoles(ims)
+      setUsers(res.users || [])
+      setRoles(res.roles || [])
+      setFeatures(res.features || [])
     } catch (e) {
       notify.error('Failed to load user management data: ' + e.message)
     } finally {

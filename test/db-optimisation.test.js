@@ -345,7 +345,8 @@ jest.mock('../actions/mdm-utils', () => {
       maxSchemaFields: 50,
       bulkBatchSize: 500,
       queryTimeout: 10000,
-      metricsCacheTTLMinutes: 5
+      metricsCacheTTLMinutes: 5,
+      infraMetricsCacheTTLMinutes: 30
     }),
     createAuditLog: jest.fn().mockResolvedValue(true),
     publishMutationEvent: jest.fn().mockResolvedValue(true),

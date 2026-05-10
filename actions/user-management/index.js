@@ -22,7 +22,8 @@ const {
   createResponse, createErrorResponse, validateIMSToken,
   getUserFromParams, getTimezoneDate, generateId,
   APP_FEATURES, buildDefaultPermissions, resolveAppUser,
-  seedSystemRoles, getUserEmailFromToken, invalidateResolveCache
+  seedSystemRoles, getUserEmailFromToken, invalidateResolveCache,
+  registerUserSession, getCachedSettings
 } = require('../mdm-utils')
 
 // ============ Validation Helpers ============
@@ -135,6 +136,10 @@ async function main (params) {
     const actorEmail = resolved.email
 
     switch (op) {
+      // Combined list — returns users + roles in one call
+      case 'list':
+        return await handleListAll(client, params)
+
       // User operations
       case 'users':
         return await handleListUsers(client, params)
@@ -196,6 +201,9 @@ async function handleResolve (client, params) {
     }
   } catch (_) { /* non-critical — settings will fall back to defaults on the client */ }
 
+  // Piggyback session registration — fire-and-forget to eliminate separate app-settings call
+  registerUserSession(client, params).catch(() => {})
+
   // Return permissions and user info (never expose internal IDs or other users' data)
   return createResponse({
     authorized: true,
@@ -212,14 +220,83 @@ async function handleResolve (client, params) {
 
 // ============ User CRUD ============
 
+/**
+ * Combined list: returns users + roles in a single call to avoid 2x RBAC + DB overhead.
+ */
+async function handleListAll (client, params) {
+  const [usersCol, rolesCol] = await Promise.all([
+    client.collection(COLLECTIONS.APP_USERS),
+    client.collection(COLLECTIONS.APP_ROLES)
+  ])
+
+  const [allUsers, allRoles] = await Promise.all([
+    usersCol.find({}).sort({ createdAt: -1 }).toArray(),
+    rolesCol.find({}).sort({ isSystem: -1, name: 1 }).toArray()
+  ])
+
+  // Build role map for user enrichment
+  const roleMap = {}
+  const seenIds = new Set()
+  const uniqueRoles = []
+  for (const r of allRoles) {
+    if (seenIds.has(r.roleId)) {
+      try { await rolesCol.deleteOne({ _id: r._id }) } catch (e) { /* best-effort cleanup */ }
+    } else {
+      seenIds.add(r.roleId)
+      uniqueRoles.push(r)
+      roleMap[r.roleId] = { name: r.name, roleId: r.roleId, isSystem: r.isSystem }
+    }
+  }
+
+  // Count active users per role
+  const roleUserCounts = {}
+  const activeUsers = allUsers.filter(u => u.status === 'active')
+  for (const u of activeUsers) {
+    roleUserCounts[u.roleId] = (roleUserCounts[u.roleId] || 0) + 1
+  }
+
+  const users = allUsers.map(u => ({
+    email: u.email,
+    firstName: u.firstName,
+    lastName: u.lastName,
+    roleId: u.roleId,
+    roleName: roleMap[u.roleId] ? roleMap[u.roleId].name : 'Unknown',
+    status: u.status,
+    createdAt: u.createdAt,
+    createdBy: u.createdBy
+  }))
+
+  const roles = uniqueRoles.map(r => ({
+    roleId: r.roleId,
+    name: r.name,
+    description: r.description || '',
+    permissions: r.permissions,
+    isSystem: !!r.isSystem,
+    userCount: roleUserCounts[r.roleId] || 0,
+    createdAt: r.createdAt,
+    createdBy: r.createdBy
+  }))
+
+  return createResponse({
+    users,
+    userCount: users.length,
+    roles,
+    roleCount: roles.length,
+    features: Object.values(APP_FEATURES)
+  })
+}
+
 async function handleListUsers (client, params) {
-  const usersCol = await client.collection(COLLECTIONS.APP_USERS)
-  const rolesCol = await client.collection(COLLECTIONS.APP_ROLES)
+  const [usersCol, rolesCol] = await Promise.all([
+    client.collection(COLLECTIONS.APP_USERS),
+    client.collection(COLLECTIONS.APP_ROLES)
+  ])
 
-  const allUsers = await usersCol.find({}).sort({ createdAt: -1 }).toArray()
-
-  // Fetch all roles for join
-  const allRoles = await rolesCol.find({}).toArray()
+  // Fetch users and roles in parallel
+  const [allUsers, allRoles] = await Promise.all([
+    usersCol.find({}).sort({ createdAt: -1 }).toArray(),
+    rolesCol.find({}).toArray()
+  ])
   const roleMap = {}
   for (const r of allRoles) {
     roleMap[r.roleId] = { name: r.name, roleId: r.roleId, isSystem: r.isSystem }
@@ -502,11 +579,16 @@ async function handleDeleteUser (client, params, actorEmail, resolvedActor) {
 // ============ Role CRUD ============
 
 async function handleListRoles (client, params) {
-  const rolesCol = await client.collection(COLLECTIONS.APP_ROLES)
-  const usersCol = await client.collection(COLLECTIONS.APP_USERS)
+  const [rolesCol, usersCol] = await Promise.all([
+    client.collection(COLLECTIONS.APP_ROLES),
+    client.collection(COLLECTIONS.APP_USERS)
+  ])
 
-  const allRoles = await rolesCol.find({}).sort({ isSystem: -1, name: 1 }).toArray()
-  const allUsers = await usersCol.find({ status: 'active' }).toArray()
+  // Fetch roles and active users in parallel
+  const [allRoles, allUsers] = await Promise.all([
+    rolesCol.find({}).sort({ isSystem: -1, name: 1 }).toArray(),
+    usersCol.find({ status: 'active' }).toArray()
+  ])
 
   // Deduplicate roles by roleId (keep first occurrence, delete extras)
   const seenIds = new Set()

@@ -2,7 +2,7 @@
 title: "MDM Data (Public API)"
 sidebar_position: 20
 description: "Technical documentation for the MDM Data (Public API) feature in DataHub Platform."
-custom_edit_url: https://github.com/mayur434/pimapp/blob/main/actions/mdm-data/index.js
+custom_edit_url: https://github.com/mayur434/datahub-app/blob/main/actions/mdm-data/index.js
 ---
 
 > Single external-facing API endpoint for all data consumption and mutation operations, with partner authentication, rate limiting, and response caching.

@@ -5,7 +5,36 @@
  * Returns normalized log entries from aio-lib-db audit collection.
  */
 
-const { getDbClient, safeFindOne, COLLECTIONS, createResponse, createErrorResponse, validateIMSToken, getEnvConfig, getCachedSettings, enforceAppPermission } = require('../mdm-utils')
+const { getDbClient, COLLECTIONS, createResponse, createErrorResponse, validateIMSToken, getEnvConfig, getCachedSettings, enforceAppPermission } = require('../mdm-utils')
+const stateLib = require('@adobe/aio-lib-state')
+
+const MASTERS_CACHE_KEY = 'audit-masters'
+
+async function getStateClient () {
+  if (!getStateClient._promise) {
+    getStateClient._promise = stateLib.init().catch(err => {
+      getStateClient._promise = null
+      throw err
+    })
+  }
+  return getStateClient._promise
+}
+
+async function getCachedMasters () {
+  try {
+    const state = await getStateClient()
+    const entry = await state.get(MASTERS_CACHE_KEY)
+    if (entry && entry.value) return JSON.parse(entry.value)
+  } catch (e) { /* cache miss */ }
+  return null
+}
+
+async function cacheMasters (masters, ttlSeconds) {
+  try {
+    const state = await getStateClient()
+    await state.put(MASTERS_CACHE_KEY, JSON.stringify(masters), { ttl: ttlSeconds })
+  } catch (e) { /* best-effort */ }
+}
 
 async function main (params) {
   if (params.__ow_method === 'options') return createResponse({})
@@ -13,25 +42,29 @@ async function main (params) {
   const auth = validateIMSToken(params)
   if (!auth.valid) return createErrorResponse(auth.error, 401)
 
-  // Route to archives listing if type=archives
-  if (params.type === 'archives') {
-    return handleArchivesList(params)
-  }
-
   let client
   try {
+    client = await getDbClient(params)
+
+    // Run RBAC, settings, collection handle, and masters cache in parallel
+    const [appPerm, settingsDoc, auditCol, cachedMasters] = await Promise.all([
+      enforceAppPermission(client, params, 'audit-list'),
+      getCachedSettings(client),
+      client.collection(COLLECTIONS.AUDIT),
+      getCachedMasters()
+    ])
+
+    if (!appPerm.allowed) return appPerm.response
+
+    // Route to archives listing if type=archives (reuse DB connection)
+    if (params.type === 'archives') {
+      return await handleArchivesList(params, client, settingsDoc)
+    }
+
     const entity = params.master || params.entity
     const operation = params.action || params.operation
     const actor = params.user || params.actor
     const { status, page, pageSize, startDate, endDate } = params
-
-    client = await getDbClient(params)
-
-    // App-level RBAC
-    const appPerm = await enforceAppPermission(client, params, 'audit-list')
-    if (!appPerm.allowed) return appPerm.response
-
-    const auditCol = await client.collection(COLLECTIONS.AUDIT)
 
     // Build DB-safe filter (only simple equality filters for aio-lib-db compatibility)
     const filter = {}
@@ -46,7 +79,6 @@ async function main (params) {
     }
 
     // Pagination — use settings-configured limits
-    const settingsDoc = await getCachedSettings(client)
     const env = getEnvConfig(params)
     const apiSettings = settingsDoc?.api || {}
     const maxPageSize = apiSettings.maxPageSize || env.maxPageSize
@@ -55,23 +87,14 @@ async function main (params) {
     const p = Math.max(1, parseInt(page) || 1)
     const ps = Math.min(maxPageSize, Math.max(1, parseInt(pageSize) || defaultPageSize))
 
-    // Determine if we need JS-level substring filtering
-    const needsJsFilter = !!operation || !!actor
+    // Build effective filter (may include $regex for operation/actor)
+    let effectiveFilter = filter
 
-    let logs, total
-
-    if (!needsJsFilter) {
-      // Fast path: DB-level pagination via skip/limit (no JS post-filtering needed)
-      const cursor = auditCol.find(filter).sort({ timestamp: -1 })
-      total = await auditCol.countDocuments(filter)
-      const rawLogs = await cursor.skip((p - 1) * ps).limit(ps).toArray()
-      logs = rawLogs.map(normalizLog)
-    } else {
-      // Use DB-level $regex for operation/actor substring search
-      const regexFilter = { ...filter }
+    if (operation || actor) {
+      effectiveFilter = { ...filter }
 
       if (operation) {
-        regexFilter.$or = [
+        effectiveFilter.$or = [
           { operation: { $regex: operation, $options: 'i' } },
           { action: { $regex: operation, $options: 'i' } }
         ]
@@ -82,32 +105,49 @@ async function main (params) {
           { actor: { $regex: actor, $options: 'i' } },
           { user: { $regex: actor, $options: 'i' } }
         ]
-        if (regexFilter.$or) {
-          // Both operation and actor filters: combine with $and
-          regexFilter.$and = [
-            { $or: regexFilter.$or },
+        if (effectiveFilter.$or) {
+          effectiveFilter.$and = [
+            { $or: effectiveFilter.$or },
             { $or: actorConditions }
           ]
-          delete regexFilter.$or
+          delete effectiveFilter.$or
         } else {
-          regexFilter.$or = actorConditions
+          effectiveFilter.$or = actorConditions
         }
       }
+    }
 
-      total = await auditCol.countDocuments(regexFilter)
-      const rawLogs = await auditCol.find(regexFilter)
+    // Run count and paginated fetch in parallel
+    const [countResult, rawLogs] = await Promise.all([
+      auditCol.countDocuments(effectiveFilter),
+      auditCol.find(effectiveFilter)
         .sort({ timestamp: -1 })
         .skip((p - 1) * ps)
         .limit(ps)
         .toArray()
-      logs = rawLogs.map(normalizLog)
+    ])
+
+    const total = countResult
+
+    // Build masters list: use cache if available, otherwise extract from current page
+    // and refresh cache in background from distinct query
+    let masters = cachedMasters
+    if (!masters) {
+      // Extract unique masters from current results as immediate fallback
+      masters = [...new Set(rawLogs.map(l => l.masterName).filter(Boolean))].sort()
+      // Refresh cache in background from full distinct query
+      const mastersCacheTTL = env.auditMastersCacheTTLSeconds
+      auditCol.distinct('masterName')
+        .then(all => cacheMasters(all.filter(Boolean).sort(), mastersCacheTTL))
+        .catch(() => cacheMasters(masters, mastersCacheTTL))
     }
 
     return createResponse({
-      logs,
+      logs: rawLogs.map(normalizLog),
       page: p,
       pageSize: ps,
-      total
+      total,
+      masters
     })
   } catch (error) {
     console.error('Audit list error:', error)
@@ -136,65 +176,58 @@ function normalizLog (log) {
 }
 
 /** List audit archive files from audit_archives collection */
-async function handleArchivesList (params) {
-  let client
-  try {
-    const { status, page, pageSize } = params
+async function handleArchivesList (params, client, settingsDoc) {
+  const { status, page, pageSize } = params
 
-    client = await getDbClient(params)
-    const archivesCol = await client.collection(COLLECTIONS.AUDIT_ARCHIVES)
+  const archivesCol = await client.collection(COLLECTIONS.AUDIT_ARCHIVES)
 
-    // Build filter
-    const filter = {}
-    if (status) {
-      filter.status = status
-    }
+  // Build filter
+  const filter = {}
+  if (status) {
+    filter.status = status
+  }
 
-    // Pagination
-    const settingsDoc = await getCachedSettings(client)
-    const env = getEnvConfig(params)
-    const apiSettings = settingsDoc?.api || {}
-    const maxPageSize = apiSettings.maxPageSize || env.maxPageSize
-    const defaultPageSize = apiSettings.defaultPageSize || env.defaultPageSize
+  // Pagination
+  const env = getEnvConfig(params)
+  const apiSettings = settingsDoc?.api || {}
+  const maxPageSize = apiSettings.maxPageSize || env.maxPageSize
+  const defaultPageSize = apiSettings.defaultPageSize || env.defaultPageSize
 
-    const p = Math.max(1, parseInt(page) || 1)
-    const ps = Math.min(maxPageSize, Math.max(1, parseInt(pageSize) || defaultPageSize))
+  const p = Math.max(1, parseInt(page) || 1)
+  const ps = Math.min(maxPageSize, Math.max(1, parseInt(pageSize) || defaultPageSize))
 
-    const total = await archivesCol.countDocuments(filter)
-    const archives = await archivesCol.find(filter)
+  // Run count and fetch in parallel
+  const [total, archives] = await Promise.all([
+    archivesCol.countDocuments(filter),
+    archivesCol.find(filter)
       .sort({ archivedAt: -1 })
       .skip((p - 1) * ps)
       .limit(ps)
       .toArray()
+  ])
 
-    // Enrich with computed fields and strip internal DB id
-    const now = new Date()
-    const enrichedArchives = archives.map(({ _id, ...a }) => ({
-      ...a,
-      isExpired: a.status === 'expired' || new Date(a.expiresAt) < now,
-      daysUntilExpiry: Math.max(0, Math.ceil((new Date(a.expiresAt) - now) / 86400000))
-    }))
+  // Enrich with computed fields and strip internal DB id
+  const now = new Date()
+  const enrichedArchives = archives.map(({ _id, ...a }) => ({
+    ...a,
+    isExpired: a.status === 'expired' || new Date(a.expiresAt) < now,
+    daysUntilExpiry: Math.max(0, Math.ceil((new Date(a.expiresAt) - now) / 86400000))
+  }))
 
-    // Summary
-    const summary = {
-      totalArchives: total,
-      totalRecords: archives.reduce((sum, a) => sum + (a.recordCount || 0), 0),
-      totalSizeBytes: archives.reduce((sum, a) => sum + (a.sizeBytes || 0), 0)
-    }
-
-    return createResponse({
-      archives: enrichedArchives,
-      summary,
-      page: p,
-      pageSize: ps,
-      total
-    })
-  } catch (error) {
-    console.error('Audit archives list error:', error)
-    return createErrorResponse(`Failed to list audit archives: ${error.message}`, 500)
-  } finally {
-    if (client) await client.close()
+  // Summary
+  const summary = {
+    totalArchives: total,
+    totalRecords: archives.reduce((sum, a) => sum + (a.recordCount || 0), 0),
+    totalSizeBytes: archives.reduce((sum, a) => sum + (a.sizeBytes || 0), 0)
   }
+
+  return createResponse({
+    archives: enrichedArchives,
+    summary,
+    page: p,
+    pageSize: ps,
+    total
+  })
 }
 
 exports.main = main

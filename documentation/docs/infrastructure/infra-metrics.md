@@ -2,7 +2,7 @@
 title: "Infrastructure Metrics"
 sidebar_position: 34
 description: "Technical documentation for the Infrastructure Metrics feature in DataHub Platform."
-custom_edit_url: https://github.com/mayur434/pimapp/blob/main/actions/infra-metrics/index.js
+custom_edit_url: https://github.com/mayur434/datahub-app/blob/main/actions/infra-metrics/index.js
 ---
 
 > Comprehensive infrastructure monitoring with six report types covering storage, guardrails, failures, analytics, usage patterns, and system overview.

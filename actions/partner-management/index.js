@@ -11,7 +11,9 @@
  */
 
 const crypto = require('crypto')
-const { getDbClient, safeFindOne, COLLECTIONS, createAuditLog, createResponse, createErrorResponse, validateIMSToken, getUserFromParams, getTimezoneDate, enforceAppPermission, rotatePartnerKey, registerWebhook } = require('../mdm-utils')
+const { getDbClient, safeFindOne, COLLECTIONS, createAuditLog, createResponse, createErrorResponse, validateIMSToken, getUserFromParams, getTimezoneDate, enforceAppPermission, rotatePartnerKey, registerWebhook, getStateClient, getEnvConfig } = require('../mdm-utils')
+
+const PARTNERS_CACHE_KEY = 'partners-list-cache'
 
 /**
  * Generate a secure random partner key (48 chars, prefixed).
@@ -28,9 +30,14 @@ function generatePartnerId () {
 }
 
 async function main (params) {
+  const _t0 = Date.now()
+  const _timings = {}
+  const _ts = (label) => { _timings[label] = Date.now() - _t0; console.log(`⏱ [partner-mgmt] ${label}: ${_timings[label]}ms`) }
+
   if (params.__ow_method === 'options') return createResponse({})
 
   const auth = validateIMSToken(params)
+  _ts('validateIMSToken')
   if (!auth.valid) return createErrorResponse(auth.error, 401)
 
   const method = (params.__ow_method || 'get').toLowerCase()
@@ -51,15 +58,30 @@ async function main (params) {
   let client
   try {
     client = await getDbClient(params)
+    _ts('getDbClient')
 
-    // App-level RBAC
-    const appPerm = await enforceAppPermission(client, params, 'partner-management')
+    // Run RBAC, collection handles in parallel (user identity only needed for mutations)
+    const [appPerm, partnersCol, metaCol] = await Promise.all([
+      enforceAppPermission(client, params, 'partner-management'),
+      client.collection(COLLECTIONS.PARTNERS),
+      client.collection(COLLECTIONS.METADATA)
+    ])
+    _ts('enforceAppPermission+collections')
     if (!appPerm.allowed) return appPerm.response
 
-    const user = await getUserFromParams(params, client)
-    const partnersCol = await client.collection(COLLECTIONS.PARTNERS)
+    if (method === 'get') {
+      const result = await handleList(client, partnersCol, metaCol, params)
+      _ts('handleList')
+      _ts('TOTAL')
+      // Inject timings into response for debugging
+      if (result && result.body && typeof result.body === 'object') {
+        result.body._timings = _timings
+      }
+      return result
+    }
 
-    if (method === 'get') return await handleList(partnersCol, params)
+    // User identity only resolved for mutations (audit logging)
+    const user = await getUserFromParams(params, client)
 
     if (method === 'post') {
       switch (op) {
@@ -98,25 +120,68 @@ async function main (params) {
 
 // ============ GET — List partners ============
 
-async function handleList (partnersCol, params) {
+async function handleList (client, partnersCol, metaCol, params) {
+  const _t0 = Date.now()
+  const _ts = (label) => console.log(`⏱ [handleList] ${label}: ${Date.now() - _t0}ms`)
   const { partnerId } = params
 
   if (partnerId) {
     const partner = await safeFindOne(partnersCol, { partnerId, deleted: { $ne: true } })
     if (!partner) return createErrorResponse('Partner not found', 404)
-    // Never expose the key in list responses — only on create
     const { partnerKey, ...safe } = partner
     return createResponse({ partner: { ...safe, keyConfigured: !!partnerKey } })
   }
 
-  const all = await partnersCol.find({ deleted: { $ne: true } }).sort({ createdAt: -1 }).toArray()
+  // Fast path: serve from state cache
+  try {
+    const state = await getStateClient()
+    _ts('getStateClient')
+    const cached = await state.get(PARTNERS_CACHE_KEY)
+    _ts('state.get cache check')
+    if (cached && cached.value) {
+      const data = JSON.parse(cached.value)
+      _ts('CACHE HIT — returning cached')
+      return createResponse({ ...data, _cached: true })
+    }
+  } catch (e) { /* cache miss — fall through */ }
+  _ts('cache miss — querying DB')
+
+  // Fetch partners and eligible masters in parallel
+  const [all, allFiles] = await Promise.all([
+    partnersCol.find({ deleted: { $ne: true } }).sort({ createdAt: -1 }).toArray(),
+    metaCol.find({ status: { $ne: 'deleted' } })
+      .project({ masterName: 1, displayName: 1, visibility: 1, crudEnabled: 1 })
+      .toArray()
+  ])
+
   // Strip keys from listing
   const partners = all.map(p => {
     const { partnerKey, ...safe } = p
     return { ...safe, keyConfigured: !!partnerKey }
   })
 
-  return createResponse({ partners, count: partners.length })
+  // Filter to public + CRUD-enabled masters for partner assignment
+  const eligibleMasters = allFiles
+    .filter(f => f.status !== 'deleted' && f.visibility === 'public' && f.crudEnabled)
+    .map(f => ({ masterName: f.masterName, displayName: f.displayName || f.masterName }))
+
+  const responseData = { partners, count: partners.length, eligibleMasters }
+
+  // Cache response in state (fire-and-forget, 2min TTL)
+  try {
+    const env = getEnvConfig(params)
+    const state = await getStateClient()
+    await state.put(PARTNERS_CACHE_KEY, JSON.stringify(responseData), { ttl: env.resolveCacheTTLSeconds || 120 })
+  } catch (e) { /* best-effort */ }
+
+  return createResponse(responseData)
+}
+
+async function invalidatePartnersCache () {
+  try {
+    const state = await getStateClient()
+    await state.delete(PARTNERS_CACHE_KEY)
+  } catch (e) { /* best-effort */ }
 }
 
 // ============ POST — Create partner ============
@@ -166,6 +231,9 @@ async function handleCreate (client, partnersCol, params, user) {
     user,
     detail: `Partner created: ${name} (${partnerId})`
   })
+
+  // Invalidate list cache
+  invalidatePartnersCache().catch(() => {})
 
   // Return the key ONLY on create — this is the only time it's visible
   return createResponse({
@@ -231,6 +299,9 @@ async function handleUpdate (client, partnersCol, params, user) {
     message: 'Partner updated successfully'
   }
 
+  // Invalidate list cache
+  invalidatePartnersCache().catch(() => {})
+
   // Return new key only when regenerated
   if (newKey) {
     response.partnerKey = newKey
@@ -262,6 +333,9 @@ async function handleDelete (client, partnersCol, params, user) {
     detail: `Partner deleted: ${partner.name} (${partnerId})`
   })
 
+  // Invalidate list cache
+  invalidatePartnersCache().catch(() => {})
+
   return createResponse({
     status: 'deleted',
     partnerId,
@@ -292,6 +366,9 @@ async function handleRotateKey (client, partnersCol, params, user) {
     user,
     detail: `API key rotated for partner: ${partner.name} (${partnerId}), expires: ${result.expiresAt}`
   })
+
+  // Invalidate list cache
+  invalidatePartnersCache().catch(() => {})
 
   return createResponse({
     status: 'rotated',

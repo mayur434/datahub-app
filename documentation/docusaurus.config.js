@@ -86,7 +86,7 @@ const config = {
           {
             title: 'More',
             items: [
-              { label: 'GitHub', href: 'https://github.com/mayur434/pimapp' },
+              { label: 'GitHub', href: 'https://github.com/mayur434/datahub-app' },
             ],
           },
         ],

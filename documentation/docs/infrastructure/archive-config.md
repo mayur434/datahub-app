@@ -2,7 +2,7 @@
 title: "Archive Config"
 sidebar_position: 31
 description: "Technical documentation for the Archive Config feature in DataHub Platform."
-custom_edit_url: https://github.com/mayur434/pimapp/blob/main/actions/archive-config/index.js
+custom_edit_url: https://github.com/mayur434/datahub-app/blob/main/actions/archive-config/index.js
 ---
 
 > Manage per-entity archival configuration with global defaults and entity-level overrides for data lifecycle governance.

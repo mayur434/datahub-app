@@ -2,7 +2,7 @@
 title: "Archive Run"
 sidebar_position: 32
 description: "Technical documentation for the Archive Run feature in DataHub Platform."
-custom_edit_url: https://github.com/mayur434/pimapp/blob/main/actions/archive-run/index.js
+custom_edit_url: https://github.com/mayur434/datahub-app/blob/main/actions/archive-run/index.js
 ---
 
 > Scheduled data archival job that compresses and offloads old records from masters exceeding their configured thresholds.

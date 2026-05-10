@@ -2,7 +2,7 @@
 title: "File Upload (Master Creation)"
 sidebar_position: 14
 description: "Technical documentation for the File Upload (Master Creation) feature in DataHub Platform."
-custom_edit_url: https://github.com/mayur434/pimapp/blob/main/actions/file-upload/index.js
+custom_edit_url: https://github.com/mayur434/datahub-app/blob/main/actions/file-upload/index.js
 ---
 
 > Creates a new master data collection from CSV upload with automatic schema inference, index creation, primary key generation, and full initialization.

@@ -2,7 +2,7 @@
 title: "Archive List"
 sidebar_position: 33
 description: "Technical documentation for the Archive List feature in DataHub Platform."
-custom_edit_url: https://github.com/mayur434/pimapp/blob/main/actions/archive-list/index.js
+custom_edit_url: https://github.com/mayur434/datahub-app/blob/main/actions/archive-list/index.js
 ---
 
 > Browse data archives with filtering, pagination, expiry tracking, and summary statistics.

@@ -17,8 +17,8 @@ try {
  * Get the base action URL
  */
 function getActionUrl (actionName) {
-  // Config keys use 'pimapp/actionName' format
-  const fullKey = `pimapp/${actionName}`
+  // Config keys use 'datahub/actionName' format
+  const fullKey = `datahub/${actionName}`
   if (actions[fullKey]) {
     return actions[fullKey]
   }
@@ -26,7 +26,7 @@ function getActionUrl (actionName) {
     return actions[actionName]
   }
   // Fallback: construct URL from convention
-  return `/api/v1/web/pimapp/${actionName}`
+  return `/api/v1/web/datahub/${actionName}`
 }
 
 /**
@@ -271,6 +271,13 @@ export async function fetchAppUsers (ims) {
  */
 export async function fetchAppRoles (ims) {
   return invokeAction('user-management', { op: 'roles' }, ims, 'GET')
+}
+
+/**
+ * Fetch users and roles in a single call (avoids 2x RBAC overhead).
+ */
+export async function fetchUsersAndRoles (ims) {
+  return invokeAction('user-management', { op: 'list' }, ims, 'GET')
 }
 
 /**

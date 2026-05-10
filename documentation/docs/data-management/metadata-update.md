@@ -2,7 +2,7 @@
 title: "Metadata Update"
 sidebar_position: 18
 description: "Technical documentation for the Metadata Update feature in DataHub Platform."
-custom_edit_url: https://github.com/mayur434/pimapp/blob/main/actions/metadata-update/index.js
+custom_edit_url: https://github.com/mayur434/datahub-app/blob/main/actions/metadata-update/index.js
 ---
 
 > Update master metadata properties including display name, description, CRUD toggles, allowed operations, and governance settings.

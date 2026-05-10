@@ -4,8 +4,7 @@ import {
   Picker, Item, ActionButton, StatusLight, Badge, Well, Tabs, TabList, TabPanels
 } from '@adobe/react-spectrum'
 import { useNavigate } from 'react-router-dom'
-import { fetchAuditLogs, fetchFileList, fetchAuditArchives, triggerAuditCleanup, triggerArchivePurge } from './actionInvoker'
-import useSwrCache from './useSwrCache'
+import { fetchAuditLogs, fetchAuditArchives, triggerAuditCleanup, triggerArchivePurge } from './actionInvoker'
 import { useDebounce } from './useDebounce'
 import { useNotifications } from './NotificationProvider'
 import Refresh from '@spectrum-icons/workflow/Refresh'
@@ -18,10 +17,7 @@ function AuditLogs ({ runtime, ims }) {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [total, setTotal] = useState(0)
-
-  // SWR cache for entity list — rarely changes, avoids extra cold-start on every AuditLogs visit
-  const entitiesSwr = useSwrCache('audit-entities', () => fetchFileList(ims).then(r => r.files || []).catch(() => []), { ttl: 5 * 60 * 1000 })
-  const entities = entitiesSwr.data || []
+  const [masters, setMasters] = useState([])
 
   // Filters
   const [filterMaster, setFilterMaster] = useState('')
@@ -66,6 +62,7 @@ function AuditLogs ({ runtime, ims }) {
       const result = await fetchAuditLogs(filters, ims)
       setLogs(result.logs || [])
       setTotal(result.total || 0)
+      if (result.masters) setMasters(result.masters)
       setError(null)
     } catch (e) {
       setError(e.message)
@@ -185,7 +182,7 @@ function AuditLogs ({ runtime, ims }) {
                 <Flex gap='size-200' alignItems='end' wrap>
                   <Picker label='Master' selectedKey={filterMaster} onSelectionChange={setFilterMaster} width='size-2000'>
                     <Item key=''>All Masters</Item>
-                    {entities.map(e => <Item key={e.masterName || e.entity}>{e.displayName || e.masterName || e.entity}</Item>)}
+                    {masters.map(m => <Item key={m}>{m}</Item>)}
                   </Picker>
                   <TextField label='User' value={filterUser} onChange={setFilterUser} placeholder='email' width='size-2400' />
                   <Picker label='Action' selectedKey={filterAction} onSelectionChange={setFilterAction} width='size-2000'>

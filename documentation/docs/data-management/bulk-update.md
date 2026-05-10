@@ -2,7 +2,7 @@
 title: "Bulk Update"
 sidebar_position: 12
 description: "Technical documentation for the Bulk Update feature in DataHub Platform."
-custom_edit_url: https://github.com/mayur434/pimapp/blob/main/actions/bulk-update/index.js
+custom_edit_url: https://github.com/mayur434/datahub-app/blob/main/actions/bulk-update/index.js
 ---
 
 > High-performance batch record operations (upsert, replace, patch, delete) from CSV or JSON payload with dry-run preview and per-record error reporting.

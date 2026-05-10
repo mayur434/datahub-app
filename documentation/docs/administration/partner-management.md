@@ -2,7 +2,7 @@
 title: "Partner Management"
 sidebar_position: 41
 description: "Technical documentation for the Partner Management feature in DataHub Platform."
-custom_edit_url: https://github.com/mayur434/pimapp/blob/main/actions/partner-management/index.js
+custom_edit_url: https://github.com/mayur434/datahub-app/blob/main/actions/partner-management/index.js
 ---
 
 > CRUD for integration partners with secure credential generation, master-level access scoping, and key lifecycle management.

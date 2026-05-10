@@ -2,7 +2,7 @@
 title: "Publish Events"
 sidebar_position: 35
 description: "Technical documentation for the Publish Events feature in DataHub Platform."
-custom_edit_url: https://github.com/mayur434/pimapp/blob/main/actions/publish-events/index.js
+custom_edit_url: https://github.com/mayur434/datahub-app/blob/main/actions/publish-events/index.js
 ---
 
 > Publishes CloudEvents to Adobe I/O Events for downstream integration notifications on data mutations.

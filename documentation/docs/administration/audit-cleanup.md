@@ -2,7 +2,7 @@
 title: "Audit Cleanup"
 sidebar_position: 43
 description: "Technical documentation for the Audit Cleanup feature in DataHub Platform."
-custom_edit_url: https://github.com/mayur434/pimapp/blob/main/actions/audit-cleanup/index.js
+custom_edit_url: https://github.com/mayur434/datahub-app/blob/main/actions/audit-cleanup/index.js
 ---
 
 > Scheduled/manual audit log archival to compressed files and purge of expired archives for storage lifecycle management.

@@ -7,7 +7,6 @@ import {
 import { useNavigate } from 'react-router-dom'
 import { invokeAction } from './actionInvoker'
 import { useNotifications } from './NotificationProvider'
-import useSwrCache from './useSwrCache'
 import Copy from '@spectrum-icons/workflow/Copy'
 import Add from '@spectrum-icons/workflow/Add'
 import Delete from '@spectrum-icons/workflow/Delete'
@@ -21,16 +20,7 @@ function PartnerConsole ({ runtime, ims }) {
   const [partners, setPartners] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
-
-  // SWR cache for eligible masters — avoids a cold-start on every PartnerConsole visit
-  const mastersSwr = useSwrCache('partner-masters', async () => {
-    const result = await invokeAction('file-list', {}, ims, 'GET')
-    const files = result.files || result.data || []
-    return files
-      .filter(f => (f.masterName || f.entityName) && f.visibility === 'public' && f.crudEnabled)
-      .map(f => ({ masterName: f.masterName || f.entityName, displayName: f.displayName || f.masterName || f.entityName }))
-  }, { ttl: 5 * 60 * 1000 })
-  const masters = mastersSwr.data || []
+  const [masters, setMasters] = useState([])
 
   // Create form state
   const [showCreate, setShowCreate] = useState(false)
@@ -60,6 +50,7 @@ function PartnerConsole ({ runtime, ims }) {
       setLoading(true)
       const result = await invokeAction('partner-management', {}, ims, 'GET')
       setPartners(result.partners || [])
+      if (result.eligibleMasters) setMasters(result.eligibleMasters)
       setError(null)
     } catch (e) {
       setError(e.message)

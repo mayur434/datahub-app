@@ -13,33 +13,8 @@
  */
 
 const { Core } = require('@adobe/aio-sdk')
-const libDb = require('@adobe/aio-lib-db')
-const { getFilesClient } = require('../mdm-utils')
+const { getDbClient, safeFindOne, getMasterCollectionName, getFilesClient, getTimezoneDate, getEnvConfig } = require('../mdm-utils')
 const crypto = require('crypto')
-const { getTimezoneDate, getEnvConfig } = require('../mdm-utils')
-
-// ============ DB Connection ============
-
-async function getDbClient (params) {
-  const { generateAccessToken } = Core.AuthClient
-  const token = await generateAccessToken(params)
-  const region = params.DB_REGION || process.env.AIO_DB_REGION || 'apac'
-  const db = await libDb.init({ token: token.access_token, region })
-  return await db.connect()
-}
-
-async function safeFindOne (collection, filter) {
-  try {
-    return await collection.findOne(filter)
-  } catch (e) {
-    if (e.message && e.message.includes('Document not found')) return null
-    throw e
-  }
-}
-
-function getMasterCollectionName (masterName) {
-  return `mdm_${masterName}`
-}
 
 // ============ Main Action ============
 
@@ -127,7 +102,7 @@ async function main (params) {
 
         // Fetch oldest records to archive using DB-level sort + limit (oldest first)
         const oldRecords = await masterCol.find({ deleted: { $ne: true } })
-          .sort({ createdAt: 1 })
+          .sort({ createdAt: 1, primaryKey: 1 })
           .limit(recordsToArchive)
           .toArray()
 

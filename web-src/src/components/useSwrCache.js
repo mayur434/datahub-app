@@ -105,11 +105,12 @@ export default function useSwrCache (key, fetcher, opts = {}) {
     if (!cached) {
       // No cache — fetch immediately
       revalidate()
-    } else if (!isFresh && revalidateOnMount) {
-      // Stale cache — show it but revalidate in background
+    } else if (revalidateOnMount) {
+      // Always revalidate in background on mount (true SWR pattern).
+      // Cached data is shown instantly; fresh data replaces it when ready.
+      // The `stale` flag tells the UI a background fetch is in progress.
       revalidate()
     }
-    // Fresh cache — skip revalidation, serve from cache
   }, [key]) // eslint-disable-line react-hooks/exhaustive-deps
 
   return { data, loading, stale, error, refresh, revalidate }

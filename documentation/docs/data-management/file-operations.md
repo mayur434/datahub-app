@@ -2,7 +2,7 @@
 title: "File Operations (List, Detail, Delete)"
 sidebar_position: 19
 description: "Technical documentation for the File Operations (List, Detail, Delete) feature in DataHub Platform."
-custom_edit_url: https://github.com/mayur434/pimapp/blob/main/actions/file-list/index.js, actions/file-detail/index.js, actions/file-delete/index.js
+custom_edit_url: https://github.com/mayur434/datahub-app/blob/main/actions/file-list/index.js, actions/file-detail/index.js, actions/file-delete/index.js
 ---
 
 > Master collection lifecycle management — listing all masters, viewing detailed metadata, and soft-deleting masters.

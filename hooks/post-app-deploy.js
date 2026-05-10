@@ -17,11 +17,30 @@
  *   - Creates indexes on all existing per-master (mdm_*) collections
  *   - Ensures query performance for filter, sort, and aggregation patterns
  *
+ * Infra Metrics Cache (aio-lib-state):
+ *   - Pre-computes ALL infra-metrics sections (overview, storage, guardrails,
+ *     failures, analytics, usage, configuration)
+ *   - Stores in aio-lib-state with configurable TTL (INFRA_METRICS_CACHE_TTL_MINUTES)
+ *   - The infra-metrics action serves from state only — zero DB impact
+ *   - Refreshed on every deploy; manual refresh via forceRefresh=true
+ *
  * Dashboard & metrics caching uses on-demand state TTL expiry —
- * no alarm triggers needed. See dashboard/index.js and infra-metrics/index.js.
+ * no alarm triggers needed. See dashboard/index.js.
  */
 
 const { execSync } = require('child_process')
+const path = require('path')
+
+// Load .env — aio CLI does not inject S2S credentials into hook process.env
+try { require('dotenv').config({ path: path.resolve(__dirname, '..', '.env') }) } catch (e) { /* dotenv not available — env vars must be set externally */ }
+
+// Map .env vars to the __OW_* env vars that aio-lib-db and aio-lib-state expect
+if (!process.env.__OW_NAMESPACE && process.env.AIO_runtime_namespace) {
+  process.env.__OW_NAMESPACE = process.env.AIO_runtime_namespace
+}
+if (!process.env.__OW_API_KEY && process.env.AIO_runtime_auth) {
+  process.env.__OW_API_KEY = process.env.AIO_runtime_auth
+}
 
 // ─── Configuration ──────────────────────────────────────────────────────────
 
@@ -31,8 +50,8 @@ const TRIGGERS = [
 ]
 
 const RULES = [
-  { name: 'audit-cleanup-rule', trigger: 'audit-cleanup-daily', action: 'pimapp/__secured_audit-cleanup' },
-  { name: 'archive-run-rule', trigger: 'archive-run-daily', action: 'pimapp/__secured_archive-run' }
+  { name: 'audit-cleanup-rule', trigger: 'audit-cleanup-daily', action: 'datahub/__secured_audit-cleanup' },
+  { name: 'archive-run-rule', trigger: 'archive-run-daily', action: 'datahub/__secured_archive-run' }
 ]
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -92,7 +111,16 @@ module.exports = async () => {
 
     // Read DB_REGION from environment (set in app.config.yaml)
     const region = process.env.DB_REGION || process.env.AIO_DB_REGION || 'apac'
-    const token = await generateAccessToken()
+
+    // Build S2S credentials from .env (aio CLI doesn't inject these into hook context)
+    let scopes = process.env.IMS_OAUTH_S2S_SCOPES || '[]'
+    try { scopes = JSON.parse(scopes) } catch (e) { /* keep as string */ }
+    const token = await generateAccessToken({
+      clientId: process.env.IMS_OAUTH_S2S_CLIENT_ID || process.env.SERVICE_API_KEY,
+      clientSecret: process.env.IMS_OAUTH_S2S_CLIENT_SECRET,
+      orgId: process.env.IMS_OAUTH_S2S_ORG_ID,
+      scopes
+    })
     const db = await libDb.init({ token: token.access_token, region })
     const client = await db.connect()
 
@@ -189,10 +217,141 @@ module.exports = async () => {
       console.warn('   ⚠ Could not enumerate masters for indexing:', e.message)
     }
 
-    await client.close()
     console.log('   ✅ Database indexes ensured!\n')
+
+    // ─── Pre-compute infra metrics and seed aio-lib-state ──────────────
+    console.log('📊  Pre-computing infra metrics for Admin Console …')
+    try {
+      await seedInfraMetricsCache(client)
+      console.log('   ✅ Infra metrics cached in aio-lib-state!\n')
+    } catch (e) {
+      console.warn(`   ⚠ Infra metrics caching skipped: ${e.message}\n`)
+    }
+
+    await client.close()
   } catch (e) {
-    // Index creation is best-effort — don't fail the deploy
-    console.warn(`   ⚠ Database index setup skipped: ${e.message}\n`)
+    // Index creation + metrics caching is best-effort — don't fail the deploy
+    console.warn(`   ⚠ Database setup skipped: ${e.message}\n`)
+  }
+}
+
+/**
+ * Pre-compute all infra-metrics sections and store in aio-lib-state.
+ * Runs once per deploy — the infra-metrics action then serves from state
+ * without any DB connections (~0.3s vs ~5-6s).
+ */
+async function seedInfraMetricsCache (client) {
+  const stateLib = require('@adobe/aio-lib-state')
+  const infraMetrics = require('../actions/infra-metrics/index.js')
+
+  const CACHE_TTL = Number(process.env.INFRA_METRICS_CACHE_TTL_MINUTES || 30) * 60
+  const prefix = infraMetrics.METRICS_CACHE_PREFIX
+
+  // Build env config from process.env (mirrors getEnvConfig output)
+  const env = {
+    dbRegion: process.env.DB_REGION || 'apac',
+    appTimezone: process.env.APP_TIMEZONE || 'UTC',
+    mdmMaxStorageMB: Number(process.env.MDM_MAX_STORAGE_MB || 250),
+    metricsCacheTTLMinutes: Number(process.env.METRICS_CACHE_TTL_MINUTES || 15),
+    infraMetricsCacheTTLMinutes: Number(process.env.INFRA_METRICS_CACHE_TTL_MINUTES || 30),
+    defaultPageSize: Number(process.env.DEFAULT_PAGE_SIZE || 25),
+    maxPageSize: Number(process.env.MAX_PAGE_SIZE || 200),
+    rateLimitPerMinute: Number(process.env.RATE_LIMIT_PER_MINUTE || 100),
+    apiMeshCacheTTL: Number(process.env.API_MESH_CACHE_TTL || 300),
+    maxSchemaFields: Number(process.env.MAX_SCHEMA_FIELDS || 50),
+    bulkBatchSize: Number(process.env.BULK_BATCH_SIZE || 500),
+    queryTimeout: Number(process.env.QUERY_TIMEOUT || 10000),
+    auditRetentionDays: Number(process.env.AUDIT_RETENTION_DAYS || 90),
+    archiveRetentionDays: Number(process.env.ARCHIVE_RETENTION_DAYS || 365)
+  }
+
+  // Load settings from DB
+  const settingsCol = await client.collection('settings')
+  let settings = {}
+  try {
+    const docs = await settingsCol.find({ settingsId: 'app-settings' }).toArray()
+    settings = (docs && docs.length > 0) ? docs[0] : {}
+  } catch (_) { /* no settings yet — use empty */ }
+
+  const tierLimits = {
+    maxStorageMB: 250,
+    maxDocuments: 500000,
+    maxCollections: 20,
+    maxDocumentSizeKB: 512,
+    actionMemoryMB: 256,
+    actionTimeoutMs: env.queryTimeout,
+    ...(settings.guardrails || {}),
+    ...(settings.infrastructure || {})
+  }
+
+  // Compute all sections — overview computes storage once and reuses it
+  const storage = await infraMetrics.collectStorageMetrics(client, tierLimits)
+
+  const [guardrails, failures, analytics, usage] = await Promise.all([
+    infraMetrics.collectGuardrailStatus(client, settings, tierLimits, env, storage),
+    infraMetrics.collectFailureReport(client, { days: 30 }),
+    infraMetrics.collectAnalytics(client, { days: 30 }),
+    infraMetrics.collectUsageMetrics(client, settings, tierLimits, env, storage)
+  ])
+
+  // Build overview from already-computed sections (no extra DB calls)
+  const meshConfig = {
+    cacheTTL: env.apiMeshCacheTTL,
+    rateLimitPerMinute: env.rateLimitPerMinute,
+    enableCORS: settings.api?.enableCORS !== false,
+    corsOrigins: settings.api?.corsOrigins || '*',
+    maxPageSize: settings.api?.maxPageSize || env.maxPageSize
+  }
+  const now = new Date().toISOString()
+
+  const overview = {
+    timestamp: now,
+    storage,
+    guardrails,
+    failures: { summary: failures.summary, recentFailures: failures.recentFailures.slice(0, 10) },
+    usage,
+    apiMesh: meshConfig,
+    health: {
+      database: storage.summary.status === 'critical' ? 'degraded' : 'healthy',
+      guardrails: guardrails.overallStatus,
+      operations: failures.summary.failureRate > 10 ? 'degraded' : 'healthy',
+      apiMesh: meshConfig.cacheTTL > 0 ? 'healthy' : 'degraded'
+    }
+  }
+
+  // Build configuration section from settings + env
+  const configuration = infraMetrics.buildConfiguration(settings, tierLimits, env)
+
+  // Store each section + combined 'all' in aio-lib-state with TTL
+  const state = await stateLib.init()
+
+  const allData = {
+    timestamp: now,
+    storage, guardrails, failures, analytics, usage,
+    configuration, apiMesh: meshConfig,
+    health: {
+      database: storage.summary.status === 'critical' ? 'degraded' : 'healthy',
+      guardrails: guardrails.overallStatus,
+      operations: failures.summary.failureRate > 10 ? 'degraded' : 'healthy',
+      apiMesh: meshConfig.cacheTTL > 0 ? 'healthy' : 'degraded'
+    }
+  }
+
+  const sections = {
+    all: allData,
+    overview,
+    storage: { storage },
+    guardrails: { guardrails },
+    failures: { failures },
+    analytics: { analytics },
+    usage: { usage },
+    configuration: { configuration }
+  }
+
+  for (const [section, data] of Object.entries(sections)) {
+    const key = `${prefix}-${section}`
+    const cacheDoc = { data: { ...data, _cached: false, _cachedAt: now }, cachedAt: now }
+    await state.put(key, JSON.stringify(cacheDoc), { ttl: CACHE_TTL })
+    console.log(`   ✓ Cached ${section} (TTL: ${CACHE_TTL}s)`)
   }
 }

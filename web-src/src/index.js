@@ -9,7 +9,7 @@ import ReactDOM from 'react-dom'
 import Runtime, { init } from '@adobe/exc-app'
 
 import App from './components/App'
-import { registerSession, deregisterSession } from './components/actionInvoker'
+import { deregisterSession } from './components/actionInvoker'
 import './index.css'
 
 window.React = require('react')
@@ -85,15 +85,8 @@ function bootstrapInExcShell () {
       localStorage.setItem('mdm_ims_org', imsOrg)
     }
 
-    // Register user session — deferred to avoid competing with resolveCurrentUser
-    // The resolve call is the critical path; session registration is fire-and-forget
-    setTimeout(() => {
-      registerSession(ims).then(() => {
-        console.log('User session registered')
-      }).catch(err => {
-        console.warn('Session registration failed:', err.message)
-      })
-    }, 2000)
+    // Session registration is now piggybacked on the resolve call (server-side)
+    // No separate frontend call needed
 
     // Clean up session on page unload / logout
     window.addEventListener('beforeunload', () => {

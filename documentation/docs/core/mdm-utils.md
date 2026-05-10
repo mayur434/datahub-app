@@ -2,7 +2,7 @@
 title: "MDM Utilities & Shared Infrastructure"
 sidebar_position: 2
 description: "Technical documentation for the MDM Utilities & Shared Infrastructure feature in DataHub Platform."
-custom_edit_url: https://github.com/mayur434/pimapp/blob/main/actions/mdm-utils.js
+custom_edit_url: https://github.com/mayur434/datahub-app/blob/main/actions/mdm-utils.js
 ---
 
 > Centralized module providing database connectivity, caching, RBAC enforcement, audit logging, storage guardrails, and all shared business logic for the DataHub MDM platform.

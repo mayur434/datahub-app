@@ -2,7 +2,7 @@
 title: "MDM Facets (Public API)"
 sidebar_position: 21
 description: "Technical documentation for the MDM Facets (Public API) feature in DataHub Platform."
-custom_edit_url: https://github.com/mayur434/pimapp/blob/main/actions/mdm-facets/index.js
+custom_edit_url: https://github.com/mayur434/datahub-app/blob/main/actions/mdm-facets/index.js
 ---
 
 > Public API for faceted search configuration and live aggregation values with OR-style faceting and filtered counts.

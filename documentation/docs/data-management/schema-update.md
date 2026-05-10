@@ -2,7 +2,7 @@
 title: "Schema Update"
 sidebar_position: 13
 description: "Technical documentation for the Schema Update feature in DataHub Platform."
-custom_edit_url: https://github.com/mayur434/pimapp/blob/main/actions/schema-update/index.js
+custom_edit_url: https://github.com/mayur434/datahub-app/blob/main/actions/schema-update/index.js
 ---
 
 > Add, update, remove, rename schema fields; replace entire schemas; and manage facet configurations with automatic data migration.

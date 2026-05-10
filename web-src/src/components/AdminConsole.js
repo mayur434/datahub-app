@@ -1,10 +1,9 @@
 import React, { useState, useEffect, useMemo } from 'react'
 import {
   Heading, View, Flex, Button, Text, ProgressCircle, Well, Divider,
-  Picker, Item, StatusLight, ActionButton, Tabs, TabList, TabPanels,
-  NumberField, Switch
+  Item, StatusLight, ActionButton, Tabs, TabList, TabPanels
 } from '@adobe/react-spectrum'
-import { invokeAction, fetchInfraMetrics } from './actionInvoker'
+import { fetchInfraMetrics } from './actionInvoker'
 import { useNotifications } from './NotificationProvider'
 import useSwrCache from './useSwrCache'
 import Refresh from '@spectrum-icons/workflow/Refresh'
@@ -14,42 +13,41 @@ import Data from '@spectrum-icons/workflow/Data'
 function AdminConsole ({ runtime, ims }) {
   const notify = useNotifications()
 
-  // SWR cache for overview — show stale instantly, revalidate in background
-  const overviewSwr = useSwrCache('admin-overview', () => fetchInfraMetrics('overview', {}, ims), { ttl: 2 * 60 * 1000 })
+  // SWR cache for ALL metrics — single API call, all tabs served from state
+  const allSwr = useSwrCache('admin-all', () => fetchInfraMetrics('all', {}, ims), { ttl: 2 * 60 * 1000 })
 
-  const [overview, setOverview] = useState(overviewSwr.data || null)
-  const [failures, setFailures] = useState(null)
-  const [analytics, setAnalytics] = useState(null)
-  const [loading, setLoading] = useState(!overviewSwr.data)
+  const [allMetrics, setAllMetrics] = useState(allSwr.data || null)
+  const [loading, setLoading] = useState(!allSwr.data)
   const [refreshing, setRefreshing] = useState(false)
   const [activeTab, setActiveTab] = useState('overview')
-  const [failureDays, setFailureDays] = useState(30)
-  const [analyticsDays, setAnalyticsDays] = useState(30)
   const [error, setError] = useState(null)
   const [lastRefresh, setLastRefresh] = useState(null)
   const [isCached, setIsCached] = useState(false)
 
+  // Derived state — no extra API calls needed
+  const overview = allMetrics
+  const failures = allMetrics?.failures || null
+  const analytics = allMetrics?.analytics || null
+
   // Sync SWR data into local state
   useEffect(() => {
-    if (overviewSwr.data) {
-      setOverview(overviewSwr.data)
-      setIsCached(!!overviewSwr.data._cached)
-      setLastRefresh(overviewSwr.data._cachedAt ? new Date(overviewSwr.data._cachedAt) : new Date())
+    if (allSwr.data) {
+      setAllMetrics(allSwr.data)
+      setIsCached(!!allSwr.data._cached)
+      setLastRefresh(allSwr.data._cachedAt ? new Date(allSwr.data._cachedAt) : new Date())
       setLoading(false)
       setError(null)
     }
-    if (overviewSwr.error && !overviewSwr.data) setError(overviewSwr.error)
-  }, [overviewSwr.data, overviewSwr.error])
+    if (allSwr.error && !allSwr.data) setError(allSwr.error)
+  }, [allSwr.data, allSwr.error])
 
   async function refreshMetrics () {
     try {
       setRefreshing(true)
-      const result = await fetchInfraMetrics('overview', { forceRefresh: true }, ims)
-      setOverview(result)
+      const result = await fetchInfraMetrics('all', { forceRefresh: true }, ims)
+      setAllMetrics(result)
       setIsCached(false)
       setLastRefresh(new Date())
-      setFailures(null)
-      setAnalytics(null)
       setError(null)
       notify.success('Metrics refreshed with live data')
     } catch (e) {
@@ -59,30 +57,10 @@ function AdminConsole ({ runtime, ims }) {
     }
   }
 
-  async function loadFailures () {
-    try {
-      const result = await fetchInfraMetrics('failures', { days: failureDays }, ims)
-      setFailures(result.failures)
-    } catch (e) {
-      notify.error(`Failed to load failure report: ${e.message}`)
-    }
-  }
-
-  async function loadAnalytics () {
-    try {
-      const result = await fetchInfraMetrics('analytics', { days: analyticsDays }, ims)
-      setAnalytics(result.analytics)
-    } catch (e) {
-      notify.error(`Failed to load analytics: ${e.message}`)
-    }
-  }
-
 
 
   function handleTabChange (key) {
     setActiveTab(key)
-    if (key === 'failures' && !failures) loadFailures()
-    if (key === 'analytics' && !analytics) loadAnalytics()
   }
 
   if (loading && !overview) {
@@ -183,9 +161,7 @@ function AdminConsole ({ runtime, ims }) {
           <Item key='failures'>
             <View paddingTop='size-300'>
               <FailuresTab
-                failures={failures || overview?.failures}
-                days={failureDays}
-                onDaysChange={(d) => { setFailureDays(d); setTimeout(loadFailures, 0) }}
+                failures={failures}
               />
             </View>
           </Item>
@@ -195,8 +171,6 @@ function AdminConsole ({ runtime, ims }) {
             <View paddingTop='size-300'>
               <AnalyticsTab
                 analytics={analytics}
-                days={analyticsDays}
-                onDaysChange={(d) => { setAnalyticsDays(d); setTimeout(loadAnalytics, 0) }}
               />
             </View>
           </Item>
@@ -211,7 +185,7 @@ function AdminConsole ({ runtime, ims }) {
           {/* ====== CONFIG TAB ====== */}
           <Item key='config'>
             <View paddingTop='size-300'>
-              <ConfigTab overview={overview} />
+              <ConfigTab overview={overview} configuration={allMetrics?.configuration} />
             </View>
           </Item>
         </TabPanels>
@@ -474,20 +448,16 @@ function GuardrailsTab ({ guardrails }) {
 // FAILURES TAB
 // ========================================================================
 
-function FailuresTab ({ failures, days, onDaysChange }) {
+function FailuresTab ({ failures }) {
   if (!failures) return <ProgressCircle aria-label='Loading...' isIndeterminate />
   const summary = failures.summary || {}
+  const days = failures.period?.days || 30
 
   return (
     <View>
       <Flex justifyContent='space-between' alignItems='center' marginBottom='size-300'>
         <Heading level={3}>Failure Report</Heading>
-        <Picker label='Period' selectedKey={String(days)} onSelectionChange={k => onDaysChange(parseInt(k))}>
-          <Item key='7'>Last 7 days</Item>
-          <Item key='14'>Last 14 days</Item>
-          <Item key='30'>Last 30 days</Item>
-          <Item key='90'>Last 90 days</Item>
-        </Picker>
+        <Text UNSAFE_style={{ fontSize: '13px', color: '#6e6e6e' }}>Last {days} days</Text>
       </Flex>
 
       {/* Summary KPIs */}
@@ -600,19 +570,15 @@ function FailuresTab ({ failures, days, onDaysChange }) {
 // ANALYTICS TAB
 // ========================================================================
 
-function AnalyticsTab ({ analytics, days, onDaysChange }) {
+function AnalyticsTab ({ analytics }) {
   if (!analytics) return <ProgressCircle aria-label='Loading...' isIndeterminate />
+  const days = analytics.period?.days || 30
 
   return (
     <View>
       <Flex justifyContent='space-between' alignItems='center' marginBottom='size-300'>
         <Heading level={3}>Action Analytics</Heading>
-        <Picker label='Period' selectedKey={String(days)} onSelectionChange={k => onDaysChange(parseInt(k))}>
-          <Item key='7'>Last 7 days</Item>
-          <Item key='14'>Last 14 days</Item>
-          <Item key='30'>Last 30 days</Item>
-          <Item key='90'>Last 90 days</Item>
-        </Picker>
+        <Text UNSAFE_style={{ fontSize: '13px', color: '#6e6e6e' }}>Last {days} days</Text>
       </Flex>
 
       <div className='admin-kpi-grid'>

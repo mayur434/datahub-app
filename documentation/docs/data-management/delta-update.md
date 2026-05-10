@@ -2,7 +2,7 @@
 title: "Delta Update"
 sidebar_position: 16
 description: "Technical documentation for the Delta Update feature in DataHub Platform."
-custom_edit_url: https://github.com/mayur434/pimapp/blob/main/actions/delta-update/index.js
+custom_edit_url: https://github.com/mayur434/datahub-app/blob/main/actions/delta-update/index.js
 ---
 
 > Incremental data changes with four modes: upsert, update-only, insert-only, and mixed-action (per-row action column).

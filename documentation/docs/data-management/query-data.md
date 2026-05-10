@@ -2,7 +2,7 @@
 title: "Query Data"
 sidebar_position: 11
 description: "Technical documentation for the Query Data feature in DataHub Platform."
-custom_edit_url: https://github.com/mayur434/pimapp/blob/main/actions/query-data/index.js
+custom_edit_url: https://github.com/mayur434/datahub-app/blob/main/actions/query-data/index.js
 ---
 
 > Real-time database query engine for the Admin UI providing paginated record browsing with filtering, sorting, field projection, and single-record lookups.

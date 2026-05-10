@@ -19,15 +19,114 @@ const crypto = require('crypto')
 // ============ Database Connection ============
 
 /**
- * Initialize aio-lib-db and return a connected client.
- * Caller MUST call client.close() in finally block.
+ * Module-level DB connection cache for warm container reuse.
+ * On cold start: checks aio-lib-state for cached IMS token first (~0.2s),
+ *   falls back to full generateAccessToken (~1-2s) if not found.
+ * On warm start: reuses cached connection (~0ms).
+ * Token is refreshed 60s before expiry to avoid mid-request failures.
+ * Dedup: concurrent callers share a single in-flight connection promise.
  */
+let _cachedDbClient = null
+let _cachedTokenExpiresAt = 0
+let _pendingDbConnect = null
+const DB_TOKEN_CACHE_KEY = 'db-access-token'
+
 async function getDbClient (params) {
-  const { generateAccessToken } = Core.AuthClient
-  const token = await generateAccessToken(params)
-  const region = params.DB_REGION || process.env.AIO_DB_REGION || 'apac'
+  const _t0 = Date.now()
+  const env = getEnvConfig(params)
+  const TOKEN_REFRESH_MARGIN_MS = env.dbTokenRefreshMarginSeconds * 1000
+  const now = Date.now()
+  // Reuse cached client if token is still valid (with safety margin)
+  if (_cachedDbClient && now < _cachedTokenExpiresAt - TOKEN_REFRESH_MARGIN_MS) {
+    console.log(`⏱ [getDbClient] WARM cache hit: ${Date.now() - _t0}ms`)
+    return _cachedDbClient
+  }
+
+  // Dedup: if another call is already establishing a connection, piggyback on it
+  if (_pendingDbConnect) {
+    console.log(`⏱ [getDbClient] piggyback on pending: ${Date.now() - _t0}ms`)
+    return _pendingDbConnect
+  }
+
+  _pendingDbConnect = _connectDb(params, env)
+  try {
+    const result = await _pendingDbConnect
+    console.log(`⏱ [getDbClient] COLD connect: ${Date.now() - _t0}ms`)
+    return result
+  } finally {
+    _pendingDbConnect = null
+  }
+}
+
+/**
+ * Internal: establish a fresh DB connection (token from state or IMS).
+ * Only one instance runs at a time — callers dedup via _pendingDbConnect.
+ */
+async function _connectDb (params, env) {
+  const _t0 = Date.now()
+  const _ts = (label) => console.log(`⏱ [_connectDb] ${label}: ${Date.now() - _t0}ms`)
+  const TOKEN_EXPIRY_DEFAULT_MS = env.dbTokenExpiryHours * 3600000
+  const TOKEN_REFRESH_MARGIN_MS = env.dbTokenRefreshMarginSeconds * 1000
+  const now = Date.now()
+
+  // Close stale connection if exists
+  if (_cachedDbClient) {
+    try { await _cachedDbClient._realClose() } catch (e) { /* ignore */ }
+    _cachedDbClient = null
+  }
+
+  // Try to get cached token from aio-lib-state (persists across cold starts)
+  let token = null
+  try {
+    const state = await getStateClient()
+    _ts('getStateClient')
+    const cached = await state.get(DB_TOKEN_CACHE_KEY)
+    _ts('state.get db-token')
+    if (cached && cached.value) {
+      const parsed = JSON.parse(cached.value)
+      // Validate token hasn't expired (with configurable safety margin)
+      if (parsed.access_token && parsed.expiresAt > now + TOKEN_REFRESH_MARGIN_MS) {
+        token = parsed
+        _ts('state token HIT')
+      }
+    }
+  } catch (e) { /* state miss — fall through to generate */ }
+
+  // Generate fresh token if state cache missed
+  if (!token) {
+    _ts('state token MISS — generating fresh')
+    const { generateAccessToken } = Core.AuthClient
+    const freshToken = await generateAccessToken(params)
+    _ts('generateAccessToken')
+    const expiresAt = now + (parseInt(freshToken.expires_in) || TOKEN_EXPIRY_DEFAULT_MS)
+    token = { access_token: freshToken.access_token, expiresAt }
+
+    // Store in state for cross-container reuse (TTL = token lifetime minus safety margin)
+    try {
+      const state = await getStateClient()
+      const ttlSeconds = Math.floor((expiresAt - now - TOKEN_REFRESH_MARGIN_MS) / 1000)
+      if (ttlSeconds > 0) {
+        await state.put(DB_TOKEN_CACHE_KEY, JSON.stringify(token), { ttl: ttlSeconds })
+      }
+      _ts('state.put db-token')
+    } catch (e) { /* best-effort cache write */ }
+  }
+
+  const region = env.dbRegion
   const db = await libDb.init({ token: token.access_token, region })
+  _ts('libDb.init')
   const client = await db.connect()
+  _ts('db.connect')
+
+  // Wrap client so close() is a no-op (connection stays alive for warm reuse)
+  const realClose = client.close.bind(client)
+  client._realClose = realClose
+  client.close = async () => { /* no-op — connection reused across warm invocations */ }
+
+  // Cache at module level for warm container reuse
+  _cachedTokenExpiresAt = token.expiresAt
+  _cachedDbClient = client
+
   return client
 }
 
@@ -267,7 +366,7 @@ async function seedSystemRoles (client, params) {
   // Set flag so subsequent calls skip DB check for 1 hour
   try {
     const state = await getStateClient()
-    await state.put('system-roles-seeded', 'true', { ttl: 3600 })
+    await state.put('system-roles-seeded', 'true', { ttl: _envConfigCache.rolesSeedCacheTTLSeconds })
   } catch (e) { /* best-effort */ }
 }
 
@@ -288,9 +387,9 @@ async function seedSystemRoles (client, params) {
  *
  * @returns {{ authorized, email, user, role, permissions }}
  */
-const RESOLVE_CACHE_TTL = 120 // 2 minutes
-
 async function resolveAppUser (client, params) {
+  const _t0 = Date.now()
+  const _ts = (label) => console.log(`⏱ [resolveAppUser] ${label}: ${Date.now() - _t0}ms`)
   const userId = extractUserId(params)
 
   // 1. Fast path: check state cache
@@ -298,31 +397,66 @@ async function resolveAppUser (client, params) {
     try {
       const state = await getStateClient()
       const cached = await state.get(`resolve_${userId}`)
+      _ts('state cache check')
       if (cached && cached.value) {
+        _ts('CACHE HIT — returning cached resolve')
         return JSON.parse(cached.value)
       }
     } catch (e) { /* cache miss — fall through */ }
   }
+  _ts('cache miss — full resolve')
 
-  // 2. Get user email
-  const email = await getUserEmailFromToken(params, client)
+  // 2. Get user email + seed system roles in parallel (independent operations)
+  const [email] = await Promise.all([
+    getUserEmailFromToken(params, client),
+    seedSystemRoles(client, params)
+  ])
+  _ts('getUserEmailFromToken+seedSystemRoles')
   if (!email) {
     return { authorized: false, reason: 'Could not resolve user email from token' }
   }
 
-  const usersCol = await client.collection(COLLECTIONS.APP_USERS)
-  const rolesCol = await client.collection(COLLECTIONS.APP_ROLES)
+  // 3. Get collection handles in parallel
+  const [usersCol, rolesCol] = await Promise.all([
+    client.collection(COLLECTIONS.APP_USERS),
+    client.collection(COLLECTIONS.APP_ROLES)
+  ])
+  _ts('collection handles')
 
-  // 3. Seed system roles if needed
-  await seedSystemRoles(client, params)
+  // 4. Try direct user lookup first (common path — skips expensive countDocuments)
+  const appUser = await safeFindOne(usersCol, { email: email.toLowerCase() })
+  _ts('findOne user')
 
-  // 4. Check if app_users collection has any active users
+  if (appUser) {
+    // User found — fast path
+    if (appUser.status !== 'active') {
+      return { authorized: false, reason: 'Your account has been deactivated. Contact an administrator.' }
+    }
+
+    const appRole = await safeFindOne(rolesCol, { roleId: appUser.roleId })
+    if (!appRole) {
+      return { authorized: false, reason: `Role '${appUser.roleId}' not found. Contact an administrator.` }
+    }
+
+    const result = {
+      authorized: true,
+      email: appUser.email,
+      user: appUser,
+      role: appRole,
+      permissions: appRole.permissions || {}
+    }
+
+    // Cache for subsequent calls (fire-and-forget)
+    cacheResolveResult(userId, result).catch(() => {})
+    return result
+  }
+
+  // 5. User not found — check if this is a bootstrap scenario (no users at all)
   let totalUsers = 0
   try {
     totalUsers = await usersCol.countDocuments({ status: 'active' })
   } catch (e) { /* collection may not exist */ }
 
-  // 5. Bootstrap: if no users exist and email matches INITIAL_ADMIN_EMAIL
   if (totalUsers === 0) {
     const initialAdminEmail = (params.INITIAL_ADMIN_EMAIL || '').trim().toLowerCase()
     if (!initialAdminEmail) {
@@ -347,7 +481,6 @@ async function resolveAppUser (client, params) {
         user: 'system',
         detail: `Initial admin bootstrapped: ${initialAdminEmail}`
       })
-      // Return full permissions
       const result = {
         authorized: true,
         email: initialAdminEmail,
@@ -362,32 +495,8 @@ async function resolveAppUser (client, params) {
     }
   }
 
-  // 6. Normal lookup
-  const appUser = await safeFindOne(usersCol, { email: email.toLowerCase() })
-  if (!appUser) {
-    return { authorized: false, reason: 'You are not registered in this application. Contact an administrator.' }
-  }
-  if (appUser.status !== 'active') {
-    return { authorized: false, reason: 'Your account has been deactivated. Contact an administrator.' }
-  }
-
-  // 7. Fetch role
-  const appRole = await safeFindOne(rolesCol, { roleId: appUser.roleId })
-  if (!appRole) {
-    return { authorized: false, reason: `Role '${appUser.roleId}' not found. Contact an administrator.` }
-  }
-
-  const result = {
-    authorized: true,
-    email: appUser.email,
-    user: appUser,
-    role: appRole,
-    permissions: appRole.permissions || {}
-  }
-
-  // Cache for subsequent calls
-  await cacheResolveResult(userId, result)
-  return result
+  // User not found but other users exist
+  return { authorized: false, reason: 'You are not registered in this application. Contact an administrator.' }
 }
 
 /**
@@ -398,7 +507,7 @@ async function cacheResolveResult (userId, result) {
   if (!userId || userId === 'system' || userId === 'admin@aem') return
   try {
     const state = await getStateClient()
-    await state.put(`resolve_${userId}`, JSON.stringify(result), { ttl: RESOLVE_CACHE_TTL })
+    await state.put(`resolve_${userId}`, JSON.stringify(result), { ttl: _envConfigCache.resolveCacheTTLSeconds })
   } catch (e) { /* best-effort */ }
 }
 
@@ -427,25 +536,33 @@ async function invalidateResolveCache (userId) {
  *   3. IMS Profile API fallback (slow but reliable — caches result for future calls)
  */
 async function getUserEmailFromToken (params, client) {
+  const _t0 = Date.now()
+  const _ts = (label) => console.log(`⏱ [getUserEmailFromToken] ${label}: ${Date.now() - _t0}ms`)
   const userId = extractUserId(params)
   if (userId === 'system' || userId === 'admin@aem') return null
 
-  // 1. Try session cache (fast path)
+  const authHeader = (params.__ow_headers || {}).authorization || ''
+
+  // 1. Try JWT email claim first (zero I/O — instant)
+  if (authHeader) {
+    const decoded = decodeJwtPayload(authHeader)
+    if (decoded && decoded.email) {
+      _ts('JWT email claim HIT')
+      return decoded.email.toLowerCase()
+    }
+  }
+  _ts('JWT email claim MISS')
+
+  // 2. Try session cache (DB lookup)
   try {
     const sessionCol = await client.collection(COLLECTIONS.USER_SESSIONS)
     const session = await safeFindOne(sessionCol, { userId })
+    _ts('session DB lookup')
     if (session && session.email) return session.email.toLowerCase()
   } catch (e) { /* fall through */ }
 
-  const authHeader = (params.__ow_headers || {}).authorization || ''
-
-  // 2. Try JWT email claim
-  if (authHeader) {
-    const decoded = decodeJwtPayload(authHeader)
-    if (decoded && decoded.email) return decoded.email.toLowerCase()
-  }
-
   // 3. Fallback: fetch from IMS Profile API and cache for future calls
+  _ts('falling back to IMS Profile API')
   if (authHeader) {
     try {
       const controller = new AbortController()
@@ -799,8 +916,8 @@ async function checkRateLimit (client, user, limit) {
       count = Number(entry.value) + 1
     }
 
-    // Write the updated count with 60-second TTL (auto-expires = sliding window)
-    await state.put(stateKey, String(count), { ttl: 60 })
+    // Write the updated count with sliding-window TTL (auto-expires)
+    await state.put(stateKey, String(count), { ttl: _envConfigCache.rateLimitWindowSeconds })
 
     const allowed = count <= limit
     return { allowed, remaining: Math.max(0, limit - count) }
@@ -1015,8 +1132,17 @@ async function createAuditLog (client, logEntry) {
  * Get an aio-lib-state client for cache operations.
  * State is a fast key-value store with native TTL expiry.
  */
+// Module-level state client cache — avoids re-initialising stateLib on every call
+let _stateClientPromise = null
+
 async function getStateClient () {
-  return stateLib.init()
+  if (!_stateClientPromise) {
+    _stateClientPromise = stateLib.init().catch(err => {
+      _stateClientPromise = null // reset on failure so next call retries
+      throw err
+    })
+  }
+  return _stateClientPromise
 }
 
 /**
@@ -1039,7 +1165,7 @@ async function invalidateMetricsCache () {
     // Re-write with very short TTL (5s) + stale flag — serves as a bridge
     // so users still see data for 5s; then cache expires and next request
     // triggers a fresh on-demand recomputation
-    const staleOpts = { ttl: 5 }
+    const staleOpts = { ttl: _envConfigCache.metricsStaleTTLSeconds }
     if (metricsEntry && metricsEntry.value) {
       const data = JSON.parse(metricsEntry.value)
       data._stale = true
@@ -1067,7 +1193,6 @@ async function invalidateMetricsCache () {
  * @returns {object} Settings document (without _id/settingsId) or empty object
  */
 const SETTINGS_CACHE_KEY = 'app-settings-cache'
-const SETTINGS_CACHE_TTL = 300 // 5 minutes
 
 async function getCachedSettings (client) {
   // Try state cache first
@@ -1087,7 +1212,7 @@ async function getCachedSettings (client) {
   // Store in state cache for next reads
   try {
     const state = await getStateClient()
-    await state.put(SETTINGS_CACHE_KEY, JSON.stringify(settings), { ttl: SETTINGS_CACHE_TTL })
+    await state.put(SETTINGS_CACHE_KEY, JSON.stringify(settings), { ttl: _envConfigCache.settingsCacheTTLSeconds })
   } catch (e) { /* best-effort cache write */ }
 
   return settings
@@ -1228,8 +1353,8 @@ function getDefaultInfraLimits (params) {
   const env = params ? getEnvConfig(params) : {}
   return {
     maxStorageMB: env.mdmMaxStorageMB,
-    maxDocuments: 500000,
-    maxDocumentSizeKB: 512
+    maxDocuments: env.mdmMaxDocuments,
+    maxDocumentSizeKB: env.mdmMaxDocumentSizeKB
   }
 }
 
@@ -1335,14 +1460,27 @@ function getEnvConfig (params) {
     DB_REGION: params.DB_REGION,
     APP_TIMEZONE: params.APP_TIMEZONE,
     MDM_MAX_STORAGE_MB: params.MDM_MAX_STORAGE_MB,
+    MDM_MAX_DOCUMENTS: params.MDM_MAX_DOCUMENTS,
+    MDM_MAX_DOCUMENT_SIZE_KB: params.MDM_MAX_DOCUMENT_SIZE_KB,
     METRICS_CACHE_TTL_MINUTES: params.METRICS_CACHE_TTL_MINUTES,
+    INFRA_METRICS_CACHE_TTL_MINUTES: params.INFRA_METRICS_CACHE_TTL_MINUTES,
     DEFAULT_PAGE_SIZE: params.DEFAULT_PAGE_SIZE,
     MAX_PAGE_SIZE: params.MAX_PAGE_SIZE,
     RATE_LIMIT_PER_MINUTE: params.RATE_LIMIT_PER_MINUTE,
+    RATE_LIMIT_WINDOW_SECONDS: params.RATE_LIMIT_WINDOW_SECONDS,
     API_MESH_CACHE_TTL: params.API_MESH_CACHE_TTL,
     MAX_SCHEMA_FIELDS: params.MAX_SCHEMA_FIELDS,
     BULK_BATCH_SIZE: params.BULK_BATCH_SIZE,
     QUERY_TIMEOUT: params.QUERY_TIMEOUT,
+    DB_TOKEN_EXPIRY_HOURS: params.DB_TOKEN_EXPIRY_HOURS,
+    DB_TOKEN_REFRESH_MARGIN_SECONDS: params.DB_TOKEN_REFRESH_MARGIN_SECONDS,
+    RESOLVE_CACHE_TTL_SECONDS: params.RESOLVE_CACHE_TTL_SECONDS,
+    SETTINGS_CACHE_TTL_SECONDS: params.SETTINGS_CACHE_TTL_SECONDS,
+    ROLES_SEED_CACHE_TTL_SECONDS: params.ROLES_SEED_CACHE_TTL_SECONDS,
+    METRICS_STALE_TTL_SECONDS: params.METRICS_STALE_TTL_SECONDS,
+    MAX_VERSIONS_PER_RECORD: params.MAX_VERSIONS_PER_RECORD,
+    AUDIT_MASTERS_CACHE_TTL_SECONDS: params.AUDIT_MASTERS_CACHE_TTL_SECONDS,
+    PARTNER_KEY_EXPIRY_DAYS: params.PARTNER_KEY_EXPIRY_DAYS,
     AUDIT_RETENTION_DAYS: params.AUDIT_RETENTION_DAYS,
     ARCHIVE_RETENTION_DAYS: params.ARCHIVE_RETENTION_DAYS
   }
@@ -1356,14 +1494,27 @@ function getEnvConfig (params) {
     dbRegion: String(params.DB_REGION),
     appTimezone: String(params.APP_TIMEZONE),
     mdmMaxStorageMB: Number(params.MDM_MAX_STORAGE_MB),
+    mdmMaxDocuments: Number(params.MDM_MAX_DOCUMENTS),
+    mdmMaxDocumentSizeKB: Number(params.MDM_MAX_DOCUMENT_SIZE_KB),
     metricsCacheTTLMinutes: Number(params.METRICS_CACHE_TTL_MINUTES),
+    infraMetricsCacheTTLMinutes: Number(params.INFRA_METRICS_CACHE_TTL_MINUTES),
     defaultPageSize: Number(params.DEFAULT_PAGE_SIZE),
     maxPageSize: Number(params.MAX_PAGE_SIZE),
     rateLimitPerMinute: Number(params.RATE_LIMIT_PER_MINUTE),
+    rateLimitWindowSeconds: Number(params.RATE_LIMIT_WINDOW_SECONDS),
     apiMeshCacheTTL: Number(params.API_MESH_CACHE_TTL),
     maxSchemaFields: Number(params.MAX_SCHEMA_FIELDS),
     bulkBatchSize: Number(params.BULK_BATCH_SIZE),
     queryTimeout: Number(params.QUERY_TIMEOUT),
+    dbTokenExpiryHours: Number(params.DB_TOKEN_EXPIRY_HOURS),
+    dbTokenRefreshMarginSeconds: Number(params.DB_TOKEN_REFRESH_MARGIN_SECONDS),
+    resolveCacheTTLSeconds: Number(params.RESOLVE_CACHE_TTL_SECONDS),
+    settingsCacheTTLSeconds: Number(params.SETTINGS_CACHE_TTL_SECONDS),
+    rolesSeedCacheTTLSeconds: Number(params.ROLES_SEED_CACHE_TTL_SECONDS),
+    metricsStaleTTLSeconds: Number(params.METRICS_STALE_TTL_SECONDS),
+    maxVersionsPerRecord: Number(params.MAX_VERSIONS_PER_RECORD),
+    auditMastersCacheTTLSeconds: Number(params.AUDIT_MASTERS_CACHE_TTL_SECONDS),
+    partnerKeyExpiryDays: Number(params.PARTNER_KEY_EXPIRY_DAYS),
     auditRetentionDays: Number(params.AUDIT_RETENTION_DAYS),
     archiveRetentionDays: Number(params.ARCHIVE_RETENTION_DAYS)
   }
@@ -1377,7 +1528,7 @@ function getEnvConfig (params) {
  * @returns {string} ISO-formatted timestamp in app timezone
  */
 function getTimezoneDate (params) {
-  const tz = (params && params.APP_TIMEZONE) || _appTimezone || 'Asia/Kolkata'
+  const tz = (params && params.APP_TIMEZONE) || _appTimezone || (_envConfigCache && _envConfigCache.appTimezone)
   if (params && params.APP_TIMEZONE) _appTimezone = params.APP_TIMEZONE
   try {
     return new Date().toLocaleString('en-CA', { timeZone: tz, hour12: false }).replace(', ', 'T') + getTimezoneOffset(tz)
@@ -1500,7 +1651,7 @@ async function createRecordVersion (client, masterName, primaryKey, previousData
     if (settings?.versioning?.enabled === false) return 0
 
     const versionsCol = await client.collection(COLLECTIONS.RECORD_VERSIONS)
-    const maxVersions = settings?.versioning?.maxVersionsPerRecord || 50
+    const maxVersions = settings?.versioning?.maxVersionsPerRecord || (_envConfigCache && _envConfigCache.maxVersionsPerRecord)
 
     // Get current version count for this record
     let existingVersions = []
@@ -2081,7 +2232,8 @@ function isPartnerKeyExpired (partner) {
  * @param {number} [expiryDays=365] - Days until the new key expires
  * @returns {{ partnerKey, expiresAt }}
  */
-async function rotatePartnerKey (partnersCol, partnerId, expiryDays = 365) {
+async function rotatePartnerKey (partnersCol, partnerId, expiryDays) {
+  if (!expiryDays) expiryDays = _envConfigCache.partnerKeyExpiryDays
   const newKey = 'pk_' + crypto.randomBytes(32).toString('base64url').substring(0, 45)
   const expiresAt = new Date()
   expiresAt.setDate(expiresAt.getDate() + expiryDays)

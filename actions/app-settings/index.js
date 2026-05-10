@@ -4,7 +4,7 @@
  * Supports GET (read all settings) and POST (update settings).
  */
 
-const { getDbClient, safeFindOne, COLLECTIONS, createAuditLog, createResponse, createErrorResponse, validateIMSToken, getUserFromParams, getEnvConfig, invalidateSettingsCache, getTimezoneDate, registerUserSession, deregisterUserSession } = require('../mdm-utils')
+const { getDbClient, safeFindOne, COLLECTIONS, createAuditLog, createResponse, createErrorResponse, validateIMSToken, getUserFromParams, getEnvConfig, invalidateSettingsCache, getTimezoneDate, registerUserSession, deregisterUserSession, enforceAppPermission } = require('../mdm-utils')
 
 const SETTINGS_DOC_ID = 'app-settings'
 
@@ -123,8 +123,12 @@ async function main (params) {
   let client
   try {
     client = await getDbClient(params)
-    const user = await getUserFromParams(params, client)
-    const settingsCol = await client.collection(COLLECTIONS.SETTINGS)
+
+    // Run user identity and collection handle in parallel
+    const [user, settingsCol] = await Promise.all([
+      getUserFromParams(params, client),
+      client.collection(COLLECTIONS.SETTINGS)
+    ])
 
     // Session management operations
     if (method === 'post' && params.sessionOperation) {
@@ -140,6 +144,9 @@ async function main (params) {
     if (method === 'get') {
       return await handleGet(settingsCol, DEFAULT_SETTINGS)
     } else if (method === 'post') {
+      // Settings updates require admin_console or settings permission
+      const appPerm = await enforceAppPermission(client, params, 'app-settings')
+      if (!appPerm.allowed) return appPerm.response
       return await handleUpdate(client, settingsCol, params, user, DEFAULT_SETTINGS)
     } else {
       return createErrorResponse(`Unsupported method: ${method}`)

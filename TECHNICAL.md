@@ -51,7 +51,7 @@
 ## Project Structure
 
 ```
-pimapp/
+datahub/
 ├── app.config.yaml          # App Builder manifest (actions, triggers, rules)
 ├── package.json             # Dependencies & scripts
 ├── webpack-config.js        # Custom webpack overrides
@@ -374,13 +374,13 @@ const url = await files.generatePresignURL('path/to/file', { expiryInSeconds: 36
 Two JsonSchema sources pointing to Runtime actions:
 
 #### MDMData Source
-- **Base URL**: `https://{NAMESPACE}.adobeioruntime.net/api/v1/web/pimapp/mdm-data`
+- **Base URL**: `https://{NAMESPACE}.adobeioruntime.net/api/v1/web/datahub/mdm-data`
 - **Operations**: `mdmQuery` (list/search), `mdmRecord` (get by ID)
 - **Type generation**: Uses `responseSchema` (JSON Schema) — NOT `responseSample`
 - **Auth forwarding**: `x-forwarded-authorization` header
 
 #### MDMFacets Source
-- **Base URL**: `https://{NAMESPACE}.adobeioruntime.net/api/v1/web/pimapp/mdm-facets`
+- **Base URL**: `https://{NAMESPACE}.adobeioruntime.net/api/v1/web/datahub/mdm-facets`
 - **Operations**: `mdmFacets` (facet config + live values)
 - **Type generation**: Uses `responseSchema` (JSON Schema) — NOT `responseSample`
 - **Auth forwarding**: `x-forwarded-authorization` header
@@ -530,7 +530,7 @@ aio api-mesh:update mesh/mesh.json
 ```javascript
 import actions from '../config.json'
 
-const response = await fetch(actions['pimapp/file-list'] + '?search=test', {
+const response = await fetch(actions['datahub/file-list'] + '?search=test', {
   headers: { 'x-ow-extra-logging': 'on' }
 })
 ```
@@ -586,7 +586,7 @@ triggers:
 rules:
   audit-cleanup-rule:
     trigger: audit-cleanup-daily
-    action: pimapp/audit-cleanup
+    action: datahub/audit-cleanup
 ```
 
 **Behavior**: Deletes audit entries older than the configured retention period (default 90 days).
@@ -602,7 +602,7 @@ triggers:
 rules:
   archive-run-rule:
     trigger: archive-run-daily
-    action: pimapp/archive-run
+    action: datahub/archive-run
 ```
 
 **Behavior**:
@@ -685,7 +685,7 @@ application:
       auto-provision: true      # Auto-create DB on deploy
       region: apac              # Database region
     packages:
-      pimapp:
+      datahub:
         license: Apache-2.0
         actions:
           <action-name>:
@@ -907,10 +907,10 @@ With `aio app dev` running:
 aio runtime action list
 
 # Invoke action directly
-aio runtime action invoke pimapp/dashboard --result
+aio runtime action invoke datahub/dashboard --result
 
 # View action details
-aio runtime action get pimapp/file-list
+aio runtime action get datahub/file-list
 
 # Check triggers
 aio runtime trigger list
@@ -939,7 +939,7 @@ aio api-mesh:get
 ### Adding a New Action
 
 1. Create `actions/<action-name>/index.js`
-2. Add entry to `app.config.yaml` under `packages.pimapp.actions`
+2. Add entry to `app.config.yaml` under `packages.datahub.actions`
 3. Add URL to `web-src/src/config.json`
 4. Add unit test in `test/<action-name>.test.js`
 5. Run `aio app dev` to verify

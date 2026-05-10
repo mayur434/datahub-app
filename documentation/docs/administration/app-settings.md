@@ -2,7 +2,7 @@
 title: "App Settings"
 sidebar_position: 44
 description: "Technical documentation for the App Settings feature in DataHub Platform."
-custom_edit_url: https://github.com/mayur434/pimapp/blob/main/actions/app-settings/index.js
+custom_edit_url: https://github.com/mayur434/datahub-app/blob/main/actions/app-settings/index.js
 ---
 
 > Application-wide configuration management with environment-variable defaults, database overrides, deep-merge strategy, and active session tracking.

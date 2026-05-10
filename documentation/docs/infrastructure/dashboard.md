@@ -2,7 +2,7 @@
 title: "Dashboard"
 sidebar_position: 30
 description: "Technical documentation for the Dashboard feature in DataHub Platform."
-custom_edit_url: https://github.com/mayur434/pimapp/blob/main/actions/dashboard/index.js
+custom_edit_url: https://github.com/mayur434/datahub-app/blob/main/actions/dashboard/index.js
 ---
 
 > Admin dashboard summary statistics with state-based caching (15-minute TTL) for fast page loads.

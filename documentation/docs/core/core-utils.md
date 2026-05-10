@@ -2,7 +2,7 @@
 title: "Core Utilities"
 sidebar_position: 1
 description: "Technical documentation for the Core Utilities feature in DataHub Platform."
-custom_edit_url: https://github.com/mayur434/pimapp/blob/main/actions/utils.js
+custom_edit_url: https://github.com/mayur434/datahub-app/blob/main/actions/utils.js
 ---
 
 > Shared utility functions providing standardized request validation, error handling, and response formatting across all DataHub actions.

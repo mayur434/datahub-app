@@ -15,11 +15,12 @@ async function main (params) {
   try {
     client = await getDbClient(params)
 
-    // App-level RBAC
-    const appPerm = await enforceAppPermission(client, params, 'file-list')
+    // Run RBAC and collection handle in parallel
+    const [appPerm, metaCol] = await Promise.all([
+      enforceAppPermission(client, params, 'file-list'),
+      client.collection(COLLECTIONS.METADATA)
+    ])
     if (!appPerm.allowed) return appPerm.response
-
-    const metaCol = await client.collection(COLLECTIONS.METADATA)
 
     const allFiles = await metaCol.find({ status: { $ne: 'deleted' } })
       .project({

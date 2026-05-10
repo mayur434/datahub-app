@@ -2,7 +2,7 @@
 title: "Record CRUD"
 sidebar_position: 10
 description: "Technical documentation for the Record CRUD feature in DataHub Platform."
-custom_edit_url: https://github.com/mayur434/pimapp/blob/main/actions/record-crud/index.js
+custom_edit_url: https://github.com/mayur434/datahub-app/blob/main/actions/record-crud/index.js
 ---
 
 > Individual record Create, Read, Update, Patch, and Delete operations on master data collections with full audit trail and schema validation.

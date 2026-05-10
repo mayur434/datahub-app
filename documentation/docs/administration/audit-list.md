@@ -2,7 +2,7 @@
 title: "Audit List"
 sidebar_position: 42
 description: "Technical documentation for the Audit List feature in DataHub Platform."
-custom_edit_url: https://github.com/mayur434/pimapp/blob/main/actions/audit-list/index.js
+custom_edit_url: https://github.com/mayur434/datahub-app/blob/main/actions/audit-list/index.js
 ---
 
 > Query audit logs with filtering, pagination, date ranges, and archive browsing for compliance and operational monitoring.

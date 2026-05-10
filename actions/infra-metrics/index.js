@@ -19,7 +19,7 @@
 const { getDbClient, safeFindOne, COLLECTIONS, createResponse, createErrorResponse, validateIMSToken, getUserFromParams, getEnvConfig, getStateClient, getCachedSettings, getTimezoneDate, enforceAppPermission } = require('../mdm-utils')
 
 const SETTINGS_DOC_ID = 'app-settings'
-const METRICS_CACHE_KEY = 'metrics-cache'
+const METRICS_CACHE_PREFIX = 'metrics-cache'
 
 const AVG_DOC_SIZES = {
   [COLLECTIONS.METADATA]: 2048,
@@ -38,9 +38,10 @@ async function main (params) {
   if (!auth.valid) return createErrorResponse(auth.error, 401)
 
   const env = getEnvConfig(params)
-  const CACHE_TTL_SECONDS = env.metricsCacheTTLMinutes * 60
+  const INFRA_CACHE_TTL_SECONDS = env.infraMetricsCacheTTLMinutes * 60
   const report = (params.report || 'overview').toLowerCase()
   const forceRefresh = params.forceRefresh === true || params.forceRefresh === 'true'
+  const cacheKey = `${METRICS_CACHE_PREFIX}-${report}`
 
   const DEFAULT_TIER_LIMITS = {
     maxStorageMB: 250,
@@ -51,24 +52,26 @@ async function main (params) {
     actionTimeoutMs: env.queryTimeout
   }
 
+  // ── State-only path (no DB) — data is pre-computed by post-deploy hook ──
+  if (!forceRefresh) {
+    try {
+      const cached = await getCachedMetrics(cacheKey)
+      if (cached) {
+        return createResponse({ ...cached.data, _cached: true, _cachedAt: cached.cachedAt })
+      }
+    } catch (_) { /* state miss — fall through to DB path */ }
+  }
+
+  // ── DB path: forceRefresh or first-ever call before a deploy has seeded state ──
   let client
   try {
     client = await getDbClient(params)
 
-    // App-level RBAC
     const appPerm = await enforceAppPermission(client, params, 'infra-metrics')
     if (!appPerm.allowed) return appPerm.response
 
     const settings = await loadSettings(client)
     const tierLimits = { ...DEFAULT_TIER_LIMITS, ...(settings.guardrails || {}), ...(settings.infrastructure || {}) }
-
-    // For overview requests, use aio-lib-state cache layer
-    if (report === 'overview' && !forceRefresh) {
-      const cached = await getCachedMetrics()
-      if (cached) {
-        return createResponse({ ...cached.data, _cached: true, _cachedAt: cached.cachedAt })
-      }
-    }
 
     let result
     switch (report) {
@@ -87,15 +90,46 @@ async function main (params) {
       case 'usage':
         result = { usage: await collectUsageMetrics(client, settings, tierLimits, env) }
         break
+      case 'configuration':
+        result = { configuration: buildConfiguration(settings, tierLimits, env) }
+        break
+      case 'all': {
+        const allStorage = await collectStorageMetrics(client, tierLimits)
+        const [allGuardrails, allFailures, allAnalytics, allUsage] = await Promise.all([
+          collectGuardrailStatus(client, settings, tierLimits, env, allStorage),
+          collectFailureReport(client, { days: 30 }),
+          collectAnalytics(client, { days: 30 }),
+          collectUsageMetrics(client, settings, tierLimits, env, allStorage)
+        ])
+        const allMesh = {
+          cacheTTL: env.apiMeshCacheTTL, rateLimitPerMinute: env.rateLimitPerMinute,
+          enableCORS: settings.api?.enableCORS !== false, corsOrigins: settings.api?.corsOrigins || '*',
+          maxPageSize: settings.api?.maxPageSize || env.maxPageSize
+        }
+        result = {
+          timestamp: getTimezoneDate(params),
+          storage: allStorage, guardrails: allGuardrails, failures: allFailures,
+          analytics: allAnalytics, usage: allUsage, configuration: buildConfiguration(settings, tierLimits, env),
+          apiMesh: allMesh,
+          health: {
+            database: allStorage.summary.status === 'critical' ? 'degraded' : 'healthy',
+            guardrails: allGuardrails.overallStatus,
+            operations: allFailures.summary.failureRate > 10 ? 'degraded' : 'healthy',
+            apiMesh: allMesh.cacheTTL > 0 ? 'healthy' : 'degraded'
+          }
+        }
+        break
+      }
       case 'overview':
       default:
         result = await collectOverview(client, settings, tierLimits, params)
-        // Cache the freshly computed overview in aio-lib-state
-        await cacheMetrics(result, CACHE_TTL_SECONDS)
-        result._cached = false
-        result._cachedAt = getTimezoneDate(params)
         break
     }
+
+    // Re-cache the freshly computed result — fire-and-forget
+    result._cached = false
+    result._cachedAt = getTimezoneDate(params)
+    cacheMetrics(result, INFRA_CACHE_TTL_SECONDS, cacheKey).catch(() => {})
 
     return createResponse(result)
   } catch (error) {
@@ -110,10 +144,10 @@ async function main (params) {
  * Retrieve cached metrics from aio-lib-state.
  * Returns null if cache key is missing (expired keys are auto-deleted by state lib).
  */
-async function getCachedMetrics () {
+async function getCachedMetrics (key) {
   try {
     const state = await getStateClient()
-    const entry = await state.get(METRICS_CACHE_KEY)
+    const entry = await state.get(key)
     if (!entry || !entry.value) return null
     return JSON.parse(entry.value)
   } catch (e) {
@@ -124,11 +158,11 @@ async function getCachedMetrics () {
 /**
  * Persist computed metrics to aio-lib-state with TTL-based expiry.
  */
-async function cacheMetrics (data, ttlSeconds) {
+async function cacheMetrics (data, ttlSeconds, key) {
   try {
     const state = await getStateClient()
     const cacheDoc = { data, cachedAt: getTimezoneDate() }
-    await state.put(METRICS_CACHE_KEY, JSON.stringify(cacheDoc), { ttl: Math.ceil(ttlSeconds) })
+    await state.put(key, JSON.stringify(cacheDoc), { ttl: Math.ceil(ttlSeconds) })
   } catch (e) {
     // Cache write is best-effort — don't fail the request
     console.error('Failed to cache metrics:', e.message)
@@ -148,10 +182,19 @@ async function collectStorageMetrics (client, tierLimits) {
   let totalDocuments = 0
   let totalEstimatedBytes = 0
 
-  for (const [key, colName] of Object.entries(COLLECTIONS)) {
-    try {
+  // Count all collections in parallel instead of sequential loop
+  const entries = Object.entries(COLLECTIONS)
+  const results = await Promise.allSettled(
+    entries.map(async ([key, colName]) => {
       const col = await client.collection(colName)
-      const count = await col.estimatedDocumentCount()
+      const count = await col.countDocuments({})
+      return { key, colName, count }
+    })
+  )
+
+  for (const result of results) {
+    if (result.status === 'fulfilled') {
+      const { colName, count } = result.value
       const avgSize = AVG_DOC_SIZES[colName] || 512
       const estimatedBytes = count * avgSize
       collectionStats[colName] = {
@@ -162,7 +205,8 @@ async function collectStorageMetrics (client, tierLimits) {
       }
       totalDocuments += count
       totalEstimatedBytes += estimatedBytes
-    } catch (e) {
+    } else {
+      const colName = entries.find(([k]) => k === result.reason?.key)?.[1] || 'unknown'
       collectionStats[colName] = { documentCount: 0, estimatedSizeBytes: 0, estimatedSizeMB: 0, error: 'Collection not accessible' }
     }
   }
@@ -194,22 +238,22 @@ async function collectStorageMetrics (client, tierLimits) {
 async function collectEntityBreakdown (client) {
   try {
     const metaCol = await client.collection(COLLECTIONS.METADATA)
-    const allMeta = await metaCol.find({ status: { $ne: 'deleted' } }).toArray()
-    const entities = allMeta
-
     const auditCol = await client.collection(COLLECTIONS.AUDIT)
 
-    // Use aggregation pipeline to count audit logs per entity
-    const auditCounts = await auditCol.aggregate()
-      .match({ type: { $ne: 'event' }, masterName: { $exists: true } })
-      .group({ _id: '$masterName', count: { $sum: 1 } })
-      .toArray()
+    // Fetch metadata and audit counts in parallel
+    const [allMeta, auditCounts] = await Promise.all([
+      metaCol.find({ status: { $ne: 'deleted' } }).toArray(),
+      auditCol.aggregate()
+        .match({ type: { $ne: 'event' }, masterName: { $exists: true } })
+        .group({ _id: '$masterName', count: { $sum: 1 } })
+        .toArray()
+    ])
     const auditByEntity = {}
     for (const a of auditCounts) {
       auditByEntity[a._id] = a.count
     }
 
-    return entities.map(e => {
+    return allMeta.map(e => {
       const recordCount = e.recordCount || 0
       const auditCount = auditByEntity[e.masterName] || 0
       const estimatedRecordBytes = recordCount * AVG_MASTER_DOC_SIZE
@@ -240,9 +284,9 @@ async function collectEntityBreakdown (client) {
 // GUARDRAIL STATUS
 // ============================================================
 
-async function collectGuardrailStatus (client, settings, tierLimits, env) {
+async function collectGuardrailStatus (client, settings, tierLimits, env, precomputedStorage) {
   env = env || {}
-  const storage = await collectStorageMetrics(client, tierLimits)
+  const storage = precomputedStorage || await collectStorageMetrics(client, tierLimits)
   const dm = settings.dataManagement || {}
   const api = settings.api || {}
   const versioning = settings.versioning || {}
@@ -331,20 +375,34 @@ async function collectFailureReport (client, params) {
 
   const dateFilter = { timestamp: { $gte: sinceISO }, type: { $ne: 'event' } }
 
-  // Use aggregation $facet to compute all stats in a single DB round-trip
-  const facetResult = await auditCol.aggregate()
-    .match(dateFilter)
-    .group({
-      _id: {
-        operation: { $ifNull: ['$operation', 'unknown'] },
-        status: { $ifNull: ['$status', 'unknown'] },
-        masterName: { $ifNull: ['$masterName', '_system'] },
-        day: { $substrBytes: [{ $ifNull: ['$timestamp', ''] }, 0, 10] },
-        actor: { $ifNull: [{ $ifNull: ['$actor', '$user'] }, 'unknown'] }
-      },
-      count: { $sum: 1 }
+  // Run aggregation and recent failures fetch in parallel
+  const [facetResult, recentFailures] = await Promise.all([
+    auditCol.aggregate()
+      .match(dateFilter)
+      .group({
+        _id: {
+          operation: { $ifNull: ['$operation', 'unknown'] },
+          status: { $ifNull: ['$status', 'unknown'] },
+          masterName: { $ifNull: ['$masterName', '_system'] },
+          day: { $substrBytes: [{ $ifNull: ['$timestamp', ''] }, 0, 10] },
+          actor: { $ifNull: [{ $ifNull: ['$actor', '$user'] }, 'unknown'] }
+        },
+        count: { $sum: 1 }
+      })
+      .toArray(),
+    auditCol.find({
+      ...dateFilter,
+      $or: [{ status: 'failure' }, { status: 'error' }]
     })
-    .toArray()
+      .sort({ timestamp: -1 })
+      .limit(50)
+      .toArray()
+      .then(docs => docs.map(f => ({
+        timestamp: f.timestamp, operation: f.operation, masterName: f.masterName,
+        actor: f.actor || f.user, error: f.error || f.message || 'Unknown error',
+        recordId: f.recordId || null
+      })))
+  ])
 
   // Compute stats from grouped results
   let totalOps = 0, totalFailures = 0, totalSuccesses = 0
@@ -380,20 +438,6 @@ async function collectFailureReport (client, params) {
     s.successRate = s.total > 0 ? parseFloat(((s.success / s.total) * 100).toFixed(1)) : 0
   }
 
-  // Fetch only the recent failure documents (limited) for the detail list
-  const recentFailures = await auditCol.find({
-    ...dateFilter,
-    $or: [{ status: 'failure' }, { status: 'error' }]
-  })
-    .sort({ timestamp: -1 })
-    .limit(50)
-    .toArray()
-    .then(docs => docs.map(f => ({
-      timestamp: f.timestamp, operation: f.operation, masterName: f.masterName,
-      actor: f.actor || f.user, error: f.error || f.message || 'Unknown error',
-      recordId: f.recordId || null
-    })))
-
   return {
     period: { days, since: sinceISO },
     summary: {
@@ -420,20 +464,26 @@ async function collectAnalytics (client, params) {
 
   const dateFilter = { timestamp: { $gte: sinceISO }, type: { $ne: 'event' } }
 
-  // Use aggregation to compute grouped stats in a single DB round-trip
-  const groupedStats = await auditCol.aggregate()
-    .match(dateFilter)
-    .group({
-      _id: {
-        operation: { $ifNull: ['$operation', 'unknown'] },
-        masterName: { $ifNull: ['$masterName', '_system'] },
-        day: { $substrBytes: [{ $ifNull: ['$timestamp', ''] }, 0, 10] },
-        actor: { $ifNull: [{ $ifNull: ['$actor', '$user'] }, 'unknown'] }
-      },
-      count: { $sum: 1 },
-      recordsAffected: { $sum: { $ifNull: ['$affectedRecords', 0] } }
-    })
-    .toArray()
+  // Run grouped stats and hourly/weekday sample in parallel
+  const [groupedStats, hourlyWeekday] = await Promise.all([
+    auditCol.aggregate()
+      .match(dateFilter)
+      .group({
+        _id: {
+          operation: { $ifNull: ['$operation', 'unknown'] },
+          masterName: { $ifNull: ['$masterName', '_system'] },
+          day: { $substrBytes: [{ $ifNull: ['$timestamp', ''] }, 0, 10] },
+          actor: { $ifNull: [{ $ifNull: ['$actor', '$user'] }, 'unknown'] }
+        },
+        count: { $sum: 1 },
+        recordsAffected: { $sum: { $ifNull: ['$affectedRecords', 0] } }
+      })
+      .toArray(),
+    auditCol.find(dateFilter)
+      .sort({ timestamp: -1 })
+      .limit(5000)
+      .toArray()
+  ])
 
   const READ_OPS = ['read', 'query', 'list', 'search', 'facets', 'dashboard', 'export']
   const invocationsByOperation = {}
@@ -460,12 +510,7 @@ async function collectAnalytics (client, params) {
     else writeOps += count
   }
 
-  // Fetch hourly/weekday distributions via separate lightweight aggregation
-  const hourlyWeekday = await auditCol.find(dateFilter)
-    .sort({ timestamp: -1 })
-    .limit(5000)
-    .toArray()
-
+  // Compute hourly/weekday distributions from the sample fetched in parallel above
   const hourlyDistribution = new Array(24).fill(0)
   const weekdayDistribution = new Array(7).fill(0)
   for (const log of hourlyWeekday) {
@@ -501,8 +546,8 @@ async function collectAnalytics (client, params) {
 // USAGE METRICS
 // ============================================================
 
-async function collectUsageMetrics (client, settings, tierLimits, env) {
-  const storage = await collectStorageMetrics(client, tierLimits)
+async function collectUsageMetrics (client, settings, tierLimits, env, precomputedStorage) {
+  const storage = precomputedStorage || await collectStorageMetrics(client, tierLimits)
   const auditCol = await client.collection(COLLECTIONS.AUDIT)
   const since = new Date()
   since.setDate(since.getDate() - 30)
@@ -511,6 +556,7 @@ async function collectUsageMetrics (client, settings, tierLimits, env) {
 
   // Use aggregation to compute stats in a single DB round-trip instead of full scan
   const GROWTH_OPS = ['upload', 'full-update', 'delta-update', 'bulk-update', 'create-record']
+  const DELETE_OPS = ['delete-record', 'delete', 'bulk-delete']
   const usageAgg = await auditCol.aggregate()
     .match(dateFilter)
     .group({
@@ -548,6 +594,9 @@ async function collectUsageMetrics (client, settings, tierLimits, env) {
     if (masterName && masterName !== '_system' && bucket.recordsAffected > 0 && GROWTH_OPS.includes(bucket._id.operation)) {
       entityGrowth[masterName] = (entityGrowth[masterName] || 0) + bucket.recordsAffected
     }
+    if (masterName && masterName !== '_system' && bucket.recordsAffected > 0 && DELETE_OPS.includes(bucket._id.operation)) {
+      entityGrowth[masterName] = (entityGrowth[masterName] || 0) - bucket.recordsAffected
+    }
   }
 
   const daysCovered = Math.max(1, Math.ceil((Date.now() - since.getTime()) / 86400000))
@@ -559,9 +608,8 @@ async function collectUsageMetrics (client, settings, tierLimits, env) {
   const meshCacheTTL = env.apiMeshCacheTTL
   const meshCacheEfficiency = meshCacheTTL > 0 ? Math.min(95, 50 + meshCacheTTL / 10) : 0
 
-  const metaCol = await client.collection(COLLECTIONS.METADATA)
-  const allMeta = await metaCol.find({ status: { $ne: 'deleted' } }).toArray()
-  const activeMeta = allMeta
+  // Reuse entity data from pre-computed storage instead of fetching metadata again
+  const activeMeta = storage.entities || []
   const entitiesCreatedRecently = activeMeta.filter(m => m.createdAt && m.createdAt >= sinceISO).length
 
   const auditGrowthPerDay = totalLogs > 0 ? parseFloat((totalLogs / daysCovered).toFixed(1)) : 0
@@ -653,15 +701,51 @@ function generateRecommendations (storage, settings, monthlyActivations, auditGr
 }
 
 // ============================================================
+// CONFIGURATION
+// ============================================================
+
+function buildConfiguration (settings, tierLimits, env) {
+  return {
+    general: settings.general || {},
+    guardrails: { ...tierLimits },
+    dataManagement: settings.dataManagement || {},
+    api: {
+      cacheTTL: env.apiMeshCacheTTL,
+      rateLimitPerMinute: env.rateLimitPerMinute,
+      enableCORS: settings.api?.enableCORS !== false,
+      corsOrigins: settings.api?.corsOrigins || '*',
+      maxPageSize: settings.api?.maxPageSize || env.maxPageSize,
+      defaultPageSize: env.defaultPageSize
+    },
+    audit: settings.audit || {},
+    security: settings.security || {},
+    performance: {
+      dbRegion: env.dbRegion,
+      queryTimeout: env.queryTimeout,
+      bulkBatchSize: env.bulkBatchSize
+    },
+    archival: settings.archival || {},
+    notifications: settings.notifications || {}
+  }
+}
+
+// ============================================================
 // OVERVIEW (combined)
 // ============================================================
 
 async function collectOverview (client, settings, tierLimits, params) {
   const env = getEnvConfig(params)
+
+  // Step 1: Compute storage ONCE (the most expensive call — all collection counts)
   const storage = await collectStorageMetrics(client, tierLimits)
-  const guardrails = await collectGuardrailStatus(client, settings, tierLimits, env)
-  const failures = await collectFailureReport(client, { days: 30 })
-  const usage = await collectUsageMetrics(client, settings, tierLimits, env)
+
+  // Step 2: Run guardrails, failures, and usage in PARALLEL
+  // All three can use the pre-computed storage to avoid redundant DB calls
+  const [guardrails, failures, usage] = await Promise.all([
+    collectGuardrailStatus(client, settings, tierLimits, env, storage),
+    collectFailureReport(client, { days: 30 }),
+    collectUsageMetrics(client, settings, tierLimits, env, storage)
+  ])
 
   const meshConfig = {
     cacheTTL: env.apiMeshCacheTTL,
@@ -686,3 +770,17 @@ async function collectOverview (client, settings, tierLimits, params) {
 }
 
 exports.main = main
+
+// Exported for use by post-deploy hook to pre-compute & seed aio-lib-state cache
+exports.collectStorageMetrics = collectStorageMetrics
+exports.collectGuardrailStatus = collectGuardrailStatus
+exports.collectFailureReport = collectFailureReport
+exports.collectAnalytics = collectAnalytics
+exports.collectUsageMetrics = collectUsageMetrics
+exports.collectOverview = collectOverview
+exports.buildConfiguration = buildConfiguration
+exports.cacheMetrics = cacheMetrics
+exports.loadSettings = loadSettings
+exports.METRICS_CACHE_PREFIX = METRICS_CACHE_PREFIX
+exports.AVG_DOC_SIZES = AVG_DOC_SIZES
+exports.AVG_MASTER_DOC_SIZE = AVG_MASTER_DOC_SIZE

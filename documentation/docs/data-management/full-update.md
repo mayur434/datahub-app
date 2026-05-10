@@ -2,7 +2,7 @@
 title: "Full Update"
 sidebar_position: 15
 description: "Technical documentation for the Full Update feature in DataHub Platform."
-custom_edit_url: https://github.com/mayur434/pimapp/blob/main/actions/full-update/index.js
+custom_edit_url: https://github.com/mayur434/datahub-app/blob/main/actions/full-update/index.js
 ---
 
 > Complete dataset replacement — inserts new data first (for atomicity), then removes old records, ensuring zero-downtime data refresh.

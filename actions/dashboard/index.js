@@ -4,6 +4,11 @@
  * Uses aio-lib-state cache with TTL-based expiry for fast loads.
  * On cache miss: computes fresh data, caches it, and serves.
  * Cache auto-refreshes every METRICS_CACHE_TTL_MINUTES (default 15 min).
+ *
+ * Performance:
+ *   - Cache check runs in parallel with DB connect + RBAC to cut latency
+ *   - Single state client instance reused across all state ops
+ *   - On cache hit, DB connection is still established for RBAC but dashboard data served from cache
  */
 
 const { getDbClient, safeFindOne, COLLECTIONS, createResponse, createErrorResponse, validateIMSToken, getEnvConfig, getStateClient, getTimezoneDate, enforceAppPermission } = require('../mdm-utils')
@@ -22,25 +27,28 @@ async function main (params) {
 
   let client
   try {
-    client = await getDbClient(params)
+    // Run DB connect, RBAC, and cache check in parallel
+    // Cache check doesn't need DB — fire it alongside the slow DB connect
+    const [dbClient, cached] = await Promise.all([
+      getDbClient(params),
+      forceRefresh ? Promise.resolve(null) : getCachedDashboard()
+    ])
+    client = dbClient
 
-    // App-level RBAC
+    // RBAC still required even on cache hit (auth gate)
     const appPerm = await enforceAppPermission(client, params, 'dashboard')
     if (!appPerm.allowed) return appPerm.response
 
-    // Serve from aio-lib-state cache unless forced refresh
-    if (!forceRefresh) {
-      const cached = await getCachedDashboard()
-      if (cached) {
-        return createResponse({ dashboard: cached.data, _cached: true, _cachedAt: cached.cachedAt })
-      }
+    // Serve from cache if available
+    if (cached) {
+      return createResponse({ dashboard: cached.data, _cached: true, _cachedAt: cached.cachedAt })
     }
 
     // Compute fresh dashboard data
     const dashboard = await computeDashboard(client)
 
-    // Cache the result in aio-lib-state
-    await cacheDashboard(dashboard, CACHE_TTL_SECONDS)
+    // Cache the result — fire and don't await (best-effort, non-blocking)
+    cacheDashboard(dashboard, CACHE_TTL_SECONDS).catch(() => {})
 
     return createResponse({ dashboard, _cached: false, _cachedAt: getTimezoneDate(params) })
   } catch (error) {

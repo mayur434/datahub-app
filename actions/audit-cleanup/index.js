@@ -260,7 +260,12 @@ async function runPurgePhase (auditArchivesCol, files, params) {
       purgedCount++
       console.log(`Purged expired audit archive: ${archive.fileName}`)
     } catch (purgeErr) {
+      // Mark as purge-failed so it can be retried — don't mark expired if file still exists
       console.error(`Failed to purge archive ${archive.archiveId}:`, purgeErr.message)
+      await auditArchivesCol.updateOne(
+        { archiveId: archive.archiveId },
+        { $set: { status: 'purge-failed', purgeError: purgeErr.message, lastPurgeAttempt: getTimezoneDate(params) } }
+      ).catch(() => {})
     }
   }
 

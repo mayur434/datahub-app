@@ -43,8 +43,8 @@ async function main (params) {
     // Visibility check
     if (metadata.visibility === 'private') {
       const authHeader = params.__ow_headers && (params.__ow_headers.authorization || params.__ow_headers['x-forwarded-authorization'])
-      if (!authHeader || authHeader.length < 20) {
-        return createErrorResponse('Authentication required for private master', 401)
+      if (!authHeader || !authHeader.startsWith('Bearer ') || authHeader.length < 30) {
+        return createErrorResponse('Authentication required for private master. Provide a valid Bearer token.', 401)
       }
     }
 

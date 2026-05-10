@@ -2,7 +2,7 @@
 title: "Visibility Update"
 sidebar_position: 17
 description: "Technical documentation for the Visibility Update feature in DataHub Platform."
-custom_edit_url: https://github.com/mayur434/pimapp/blob/main/actions/visibility-update/index.js
+custom_edit_url: https://github.com/mayur434/datahub-app/blob/main/actions/visibility-update/index.js
 ---
 
 > Toggle public/private API visibility for master data collections.
