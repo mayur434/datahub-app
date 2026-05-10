@@ -443,9 +443,13 @@ async function getUserEmailFromToken (params, client) {
   // 3. Fallback: fetch from IMS Profile API and cache for future calls
   if (authHeader) {
     try {
+      const controller = new AbortController()
+      const timeout = setTimeout(() => controller.abort(), 5000)
       const profileRes = await fetch('https://ims-na1.adobelogin.com/ims/profile/v1', {
-        headers: { Authorization: authHeader }
+        headers: { Authorization: authHeader },
+        signal: controller.signal
       })
+      clearTimeout(timeout)
       if (profileRes.ok) {
         const profile = await profileRes.json()
         if (profile.email) {
@@ -1142,14 +1146,28 @@ async function publishMutationEvent (client, eventType, payload) {
 
 // ============ Response Helpers ============
 
-function createResponse (body, statusCode = 200) {
+// Allowed CORS origins for security hardening
+const ALLOWED_ORIGINS = [
+  'https://experience.adobe.com',
+  'https://localhost:9080'
+]
+
+function getCorsOrigin (requestOrigin) {
+  if (requestOrigin && ALLOWED_ORIGINS.includes(requestOrigin)) {
+    return requestOrigin
+  }
+  return ALLOWED_ORIGINS[0] // Default to experience.adobe.com
+}
+
+function createResponse (body, statusCode = 200, requestOrigin) {
   return {
     statusCode,
     headers: {
       'Content-Type': 'application/json',
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Headers': 'Authorization, Content-Type, x-gw-ims-org-id, x-ow-extra-logging',
-      'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS'
+      'Access-Control-Allow-Origin': getCorsOrigin(requestOrigin),
+      'Access-Control-Allow-Headers': 'Authorization, Content-Type, x-gw-ims-org-id, x-ow-extra-logging, x-partner-id, x-partner-key',
+      'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
+      'Vary': 'Origin'
     },
     body
   }
@@ -1295,7 +1313,12 @@ function estimateFileSizeMB (content) {
  * @param {object} params - Action params (includes env vars from app.config.yaml)
  * @returns {object} Typed config values
  */
+let _envConfigCache = null
+
 function getEnvConfig (params) {
+  // Return cached config if already parsed (env vars don't change within an invocation)
+  if (_envConfigCache) return _envConfigCache
+
   // All values MUST come from .env → app.config.yaml → action params.
   // No fallback defaults — missing env vars surface as errors immediately.
   const required = {
@@ -1319,7 +1342,7 @@ function getEnvConfig (params) {
     throw new Error(`Missing required environment variable(s): ${missing.join(', ')}. Configure them in .env and redeploy.`)
   }
 
-  return {
+  _envConfigCache = {
     dbRegion: String(params.DB_REGION),
     appTimezone: String(params.APP_TIMEZONE),
     mdmMaxStorageMB: Number(params.MDM_MAX_STORAGE_MB),
@@ -1334,6 +1357,7 @@ function getEnvConfig (params) {
     auditRetentionDays: Number(params.AUDIT_RETENTION_DAYS),
     archiveRetentionDays: Number(params.ARCHIVE_RETENTION_DAYS)
   }
+  return _envConfigCache
 }
 
 /**

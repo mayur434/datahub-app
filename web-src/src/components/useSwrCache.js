@@ -109,10 +109,7 @@ export default function useSwrCache (key, fetcher, opts = {}) {
       // Stale cache — show it but revalidate in background
       revalidate()
     }
-    // If fresh cache exists and revalidateOnMount is true, still revalidate in bg
-    else if (isFresh && revalidateOnMount) {
-      revalidate()
-    }
+    // Fresh cache — skip revalidation, serve from cache
   }, [key]) // eslint-disable-line react-hooks/exhaustive-deps
 
   return { data, loading, stale, error, refresh, revalidate }

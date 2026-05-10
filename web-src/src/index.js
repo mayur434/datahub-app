@@ -85,12 +85,15 @@ function bootstrapInExcShell () {
       localStorage.setItem('mdm_ims_org', imsOrg)
     }
 
-    // Register user session — caches user identity (email/name) server-side
-    registerSession(ims).then(() => {
-      console.log('User session registered')
-    }).catch(err => {
-      console.warn('Session registration failed:', err.message)
-    })
+    // Register user session — deferred to avoid competing with resolveCurrentUser
+    // The resolve call is the critical path; session registration is fire-and-forget
+    setTimeout(() => {
+      registerSession(ims).then(() => {
+        console.log('User session registered')
+      }).catch(err => {
+        console.warn('Session registration failed:', err.message)
+      })
+    }, 2000)
 
     // Clean up session on page unload / logout
     window.addEventListener('beforeunload', () => {

@@ -40,6 +40,12 @@ function getImsCredentials (ims) {
 }
 
 /**
+ * In-flight request deduplication map.
+ * Prevents duplicate simultaneous GET calls to the same endpoint.
+ */
+const inflightRequests = new Map()
+
+/**
  * Invoke an MDM action with IMS auth
  */
 export async function invokeAction (actionName, params = {}, ims = {}, method = 'POST') {
@@ -51,6 +57,19 @@ export async function invokeAction (actionName, params = {}, ims = {}, method = 
   }
 
   const actionUrl = getActionUrl(actionName)
+
+  // Deduplicate concurrent GET requests with identical params
+  if (method === 'GET') {
+    const dedupeKey = `${actionName}:${JSON.stringify(params)}`
+    const inflight = inflightRequests.get(dedupeKey)
+    if (inflight) return inflight
+
+    const promise = actionWebInvoke(actionUrl, headers, params, { method })
+      .finally(() => inflightRequests.delete(dedupeKey))
+    inflightRequests.set(dedupeKey, promise)
+    return promise
+  }
+
   return await actionWebInvoke(actionUrl, headers, params, { method })
 }
 
