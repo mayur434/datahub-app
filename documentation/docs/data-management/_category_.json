@@ -1,0 +1,9 @@
+{
+  "label": "Data Management",
+  "position": 3,
+  "collapsed": false,
+  "link": {
+    "type": "generated-index",
+    "description": "All Data Management features in the DataHub platform."
+  }
+}

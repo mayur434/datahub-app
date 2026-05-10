@@ -36,7 +36,10 @@
     "e2e": "jest --collectCoverage=false --testRegex ./e2e",
     "lint": "eslint --ignore-pattern web-src --no-error-on-unmatched-pattern test src actions",
     "lint:fix": "npm run lint -- --fix",
-    "flush-db": "node actions/flush-db.js"
+    "flush-db": "node actions/flush-db.js",
+    "docs:start": "cd documentation && npm start",
+    "docs:build": "cd documentation && npm run build",
+    "docs:serve": "cd documentation && npm run serve"
   },
   "engines": {
     "node": ">=18"

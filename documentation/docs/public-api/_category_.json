@@ -1,0 +1,9 @@
+{
+  "label": "Public API",
+  "position": 4,
+  "collapsed": false,
+  "link": {
+    "type": "generated-index",
+    "description": "All Public API features in the DataHub platform."
+  }
+}

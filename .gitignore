@@ -32,6 +32,11 @@ coverage
 # Parcel
 .parcel-cache
 
+# Docusaurus
+documentation/build
+documentation/.docusaurus
+documentation/node_modules
+
 # OSX
 .DS_Store
 

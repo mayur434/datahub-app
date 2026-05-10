@@ -84,7 +84,11 @@ function HeaderBar ({ ims, onToggleSidebar, isMobile }) {
         {/* Right side: user info & actions */}
         <Flex alignItems='center' gap='size-100'>
           <TooltipTrigger>
-            <ActionButton isQuiet aria-label='Help & Documentation'>
+            <ActionButton
+              isQuiet
+              aria-label='Help & Documentation'
+              onPress={() => window.open('https://mayur434.github.io/pimapp/', '_blank', 'noopener,noreferrer')}
+            >
               <Help />
             </ActionButton>
             <Tooltip>Documentation</Tooltip>

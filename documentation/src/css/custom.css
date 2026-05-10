@@ -1,0 +1,70 @@
+:root {
+  --ifm-color-primary: #1473e6;
+  --ifm-color-primary-dark: #1168d4;
+  --ifm-color-primary-darker: #1062c8;
+  --ifm-color-primary-darkest: #0d51a5;
+  --ifm-color-primary-light: #2a80e8;
+  --ifm-color-primary-lighter: #3688ea;
+  --ifm-color-primary-lightest: #5d9fee;
+  --ifm-code-font-size: 95%;
+  --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.1);
+  --ifm-font-family-base: 'Adobe Clean', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+[data-theme='dark'] {
+  --ifm-color-primary: #5d9fee;
+  --ifm-color-primary-dark: #3d8beb;
+  --ifm-color-primary-darker: #2d81e9;
+  --ifm-color-primary-darkest: #1468d1;
+  --ifm-color-primary-light: #7db3f1;
+  --ifm-color-primary-lighter: #8dbdf3;
+  --ifm-color-primary-lightest: #bedaf8;
+  --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.3);
+}
+
+/* Feature badge styles */
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-right: 6px;
+}
+
+.badge--core { background: #e8f0fe; color: #1a73e8; }
+.badge--data { background: #e6f4ea; color: #137333; }
+.badge--api { background: #fce8e6; color: #c5221f; }
+.badge--infra { background: #fef7e0; color: #e37400; }
+.badge--admin { background: #f3e8fd; color: #8430ce; }
+
+[data-theme='dark'] .badge--core { background: #1a3a5c; color: #8ab4f8; }
+[data-theme='dark'] .badge--data { background: #1a3c2a; color: #81c995; }
+[data-theme='dark'] .badge--api { background: #3c1a1a; color: #f28b82; }
+[data-theme='dark'] .badge--infra { background: #3c2e1a; color: #fdd663; }
+[data-theme='dark'] .badge--admin { background: #2d1a4e; color: #c58af9; }
+
+/* Table improvements */
+table {
+  display: table;
+  width: 100%;
+}
+
+table th {
+  white-space: nowrap;
+}
+
+/* Admonition tweaks */
+.admonition {
+  margin-bottom: 1.5em;
+}
+
+/* Code block title bar */
+.theme-code-block-highlighted-line {
+  background-color: var(--docusaurus-highlighted-code-line-bg);
+  display: block;
+  margin: 0 calc(-1 * var(--ifm-pre-padding));
+  padding: 0 var(--ifm-pre-padding);
+}

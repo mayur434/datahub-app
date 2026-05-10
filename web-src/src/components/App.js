@@ -22,6 +22,7 @@ const ArchiveManager = lazy(() => import('./ArchiveManager'))
 const AdminConsole = lazy(() => import('./AdminConsole'))
 const PartnerConsole = lazy(() => import('./PartnerConsole'))
 const UserManagement = lazy(() => import('./UserManagement'))
+// DocumentationPage removed — now served via Docusaurus at https://mayur434.github.io/pimapp/
 
 function RouteLoading () {
   return (
@@ -165,6 +166,7 @@ function AppShell ({ runtime, ims, isMobile, sidebarOpen, closeSidebar, toggleSi
               <Route path='/admin' element={<ProtectedRoute feature='admin_console'><AdminConsole runtime={runtime} ims={ims} /></ProtectedRoute>} />
               <Route path='/partners' element={<ProtectedRoute feature='partners'><PartnerConsole runtime={runtime} ims={ims} /></ProtectedRoute>} />
               <Route path='/users' element={<ProtectedRoute feature='user_management'><UserManagement runtime={runtime} ims={ims} /></ProtectedRoute>} />
+              {/* Documentation now served via Docusaurus at https://mayur434.github.io/pimapp/ */}
               <Route path='*' element={<NotFound />} />
             </Routes>
           </Suspense>

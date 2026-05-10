@@ -1,0 +1,9 @@
+{
+  "label": "Infrastructure",
+  "position": 5,
+  "collapsed": false,
+  "link": {
+    "type": "generated-index",
+    "description": "All Infrastructure features in the DataHub platform."
+  }
+}

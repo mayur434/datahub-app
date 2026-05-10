@@ -1,0 +1,9 @@
+{
+  "label": "Administration",
+  "position": 6,
+  "collapsed": false,
+  "link": {
+    "type": "generated-index",
+    "description": "All Administration features in the DataHub platform."
+  }
+}
