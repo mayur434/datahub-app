@@ -7,10 +7,10 @@ const config = {
   favicon: 'img/favicon.ico',
 
   url: 'https://mayur434.github.io',
-  baseUrl: '/pimapp/',
+  baseUrl: '/datahub-app/',
 
   organizationName: 'mayur434',
-  projectName: 'pimapp',
+  projectName: 'datahub-app',
   deploymentBranch: 'gh-pages',
   trailingSlash: false,
 
@@ -30,7 +30,7 @@ const config = {
         docs: {
           routeBasePath: '/',
           sidebarPath: require.resolve('./sidebars.js'),
-          editUrl: 'https://github.com/mayur434/pimapp/tree/main/documentation/',
+          editUrl: 'https://github.com/mayur434/datahub-app/tree/main/documentation/',
         },
         blog: false,
         theme: {
@@ -58,7 +58,7 @@ const config = {
             label: 'Features',
           },
           {
-            href: 'https://github.com/mayur434/pimapp',
+            href: 'https://github.com/mayur434/datahub-app',
             label: 'GitHub',
             position: 'right',
           },

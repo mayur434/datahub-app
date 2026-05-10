@@ -87,7 +87,7 @@ function HeaderBar ({ ims, onToggleSidebar, isMobile }) {
             <ActionButton
               isQuiet
               aria-label='Help & Documentation'
-              onPress={() => window.open('https://mayur434.github.io/pimapp/', '_blank', 'noopener,noreferrer')}
+              onPress={() => window.open('https://mayur434.github.io/datahub-app/', '_blank', 'noopener,noreferrer')}
             >
               <Help />
             </ActionButton>

@@ -13,7 +13,6 @@ import Help from '@spectrum-icons/workflow/Help'
 import GraphBarVertical from '@spectrum-icons/workflow/GraphBarVertical'
 import UserGroup from '@spectrum-icons/workflow/UserGroup'
 import LockClosed from '@spectrum-icons/workflow/LockClosed'
-import Book from '@spectrum-icons/workflow/Book'
 import { useApp } from './AppContext'
 
 function SideBar ({ onNavigate }) {
@@ -87,13 +86,7 @@ function SideBar ({ onNavigate }) {
               {hasPermission('user_management') && (
                 <SideNavItem to='/users' icon={<LockClosed size='S' />} label='Users & Roles' onNavigate={onNavigate} />
               )}
-              {hasPermission('admin_console') && (
-                <a href='https://mayur434.github.io/pimapp/' target='_blank' rel='noopener noreferrer' className='mdm-sidenav-item' style={{ textDecoration: 'none' }}>
-                  <span className='mdm-sidenav-item__icon'><Book size='S' /></span>
-                  <span className='mdm-sidenav-item__label'>Documentation</span>
-                  <span style={{ fontSize: '10px', marginLeft: 'auto', opacity: 0.6 }}>↗</span>
-                </a>
-              )}
+
             </ul>
           </div>
         )}
